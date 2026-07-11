@@ -1,9 +1,10 @@
 # WizCinema
 
-WizCinema is a small native macOS app that makes WiZ lights respond gently to
-the sound playing on your Mac. It captures system audio with Apple's Core Audio
-tap API, analyzes it locally, and sends low-latency WiZ commands over your
-home Wi-Fi. It does not need BlackHole, Loopback, a Hue bridge, or a cloud API.
+WizCinema is a native macOS movie-ambience app. It captures system audio with
+Apple's Core Audio tap API, analyzes it locally, and makes compatible lights
+respond gently. It supports WiZ directly and can also discover compatible
+mixed-brand devices through a local Home Assistant hub. It does not need
+BlackHole, Loopback, a Hue bridge, or a cloud API for WiZ.
 
 ## Requirements
 
@@ -11,6 +12,21 @@ home Wi-Fi. It does not need BlackHole, Loopback, a Hue bridge, or a cloud API.
 - WiZ lights already paired in the WiZ app and on the same Wi-Fi as the Mac
 - In WiZ: **Settings → Security → Allow local communication** switched on
 - A non-guest Wi-Fi network that allows UDP port `38899` to the lights
+
+### Mixed-brand devices with Home Assistant
+
+For the broadest device coverage, install Home Assistant on your own local
+network and add your Matter, Zigbee, HomeKit-compatible, Sonos, TV, receiver,
+shade, fan, and vendor-integrated devices there. In WizCinema, enter the local
+Home Assistant URL and a **Long-Lived Access Token**. The token is saved only
+in this Mac's Keychain, never in the project, logs, or UserDefaults.
+
+WizCinema discovers lights, media players, covers, fans, and switches that
+Home Assistant exposes. Only selected colour-capable lights receive continuous
+soundtrack-driven colour/brightness updates. The app deliberately never
+automates locks, garages, alarms, cameras, water, cooking appliances, or HVAC.
+Other safe categories are visible for future explicit, opt-in cinema actions;
+they are not driven rapidly by soundtrack volume.
 
 The app works with headphones because it reads the Mac's outgoing system audio,
 not a microphone. Protected/DRM playback apps may decline to provide audio;
@@ -60,6 +76,11 @@ dist/WizCinema.app/Contents/MacOS/WizCinema --sync-probe
 4. Press **Stop and restore lights** when finished. WizCinema restores the
    pre-session state it read at Start.
 
+To add Home Assistant devices, use the **Home Assistant — mixed-brand devices**
+section: enter the hub URL and token, choose **Connect**, then select the
+colour-capable lights you want to join live ambience. Non-light devices begin
+unselected and must remain explicit opt-in.
+
 The conservative defaults (8–65% brightness and medium responsiveness) are
 intended for movie watching. Increase sensitivity for music-style reactions.
 
@@ -77,6 +98,10 @@ intended for movie watching. Increase sensitivity for music-style reactions.
   boundary, so keep the network private.
 - **Meters never move for one service:** the player may be protecting its
   audio. This is a limitation imposed by that service, not a WiZ issue.
+- **Home Assistant cannot connect:** use its local URL (for example
+  `http://homeassistant.local:8123`), ensure the Mac can reach it, and create a
+  new Long-Lived Access Token in the Home Assistant profile page. HTTP is
+  accepted only for a user-selected local hub; prefer HTTPS for remote access.
 
 WiZ's built-in phone/tablet **Music Sync** is a simpler fallback. It listens
 through the phone microphone, so it does not offer direct Mac-audio capture and

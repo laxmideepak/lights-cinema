@@ -18,6 +18,12 @@ final class AppModel: ObservableObject {
     @Published var status = "Ready to find lights on your Wi‑Fi."
     @Published var errorMessage: String?
     @Published var manualIP = ""
+    @Published var homeAssistantURL = UserDefaults.standard.string(forKey: "homeAssistantURL") ?? ""
+    @Published var homeAssistantToken = ""
+    @Published var hasSavedHomeAssistantToken = false
+    @Published var homeAssistantDevices = [CinemaDevice]()
+    @Published var isConnectingHomeAssistant = false
+    @Published var homeAssistantStatus = "Connect a local Home Assistant hub to add supported mixed-brand devices."
 
     private let service = WiZService()
     private let analyzer = AudioAnalyzer()
@@ -26,8 +32,19 @@ final class AppModel: ObservableObject {
     private var previousTarget: LightTarget?
     private var lastSentTarget: LightTarget?
     private var savedStates = [String: PilotState]()
+    private var homeAssistantClient: HomeAssistantClient?
+    private var homeAssistantSnapshots = [CinemaDeviceSnapshot]()
 
-    var selectedCount: Int { bulbs.filter(\.selected).count }
+    init() {
+        if let url = HomeAssistantClient.normalizedURL(homeAssistantURL),
+           (try? HomeAssistantTokenStore.read(for: url)) != nil {
+            hasSavedHomeAssistantToken = true
+        }
+    }
+
+    var selectedCount: Int {
+        bulbs.filter(\.selected).count + homeAssistantDevices.filter { $0.selected && $0.supportsLiveAmbientSync }.count
+    }
 
     var settings: LightingSettings {
         LightingSettings(
@@ -86,6 +103,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func connectHomeAssistant() {
+        guard !isConnectingHomeAssistant else { return }
+        guard let baseURL = HomeAssistantClient.normalizedURL(homeAssistantURL) else {
+            errorMessage = "Enter a valid Home Assistant URL, for example http://homeassistant.local:8123."
+            return
+        }
+        let enteredToken = homeAssistantToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token: String?
+        if !enteredToken.isEmpty {
+            token = enteredToken
+        } else {
+            token = try? HomeAssistantTokenStore.read(for: baseURL)
+        }
+        guard let token, let client = HomeAssistantClient(urlString: baseURL.absoluteString, token: token) else {
+            errorMessage = "Enter a Home Assistant long-lived access token. The token is stored only in this Mac’s Keychain."
+            return
+        }
+
+        isConnectingHomeAssistant = true
+        homeAssistantStatus = "Connecting to Home Assistant…"
+        Task {
+            do {
+                try await client.validateConnection()
+                let devices = try await client.fetchDevices()
+                if !enteredToken.isEmpty { try HomeAssistantTokenStore.save(enteredToken, for: baseURL) }
+                UserDefaults.standard.set(baseURL.absoluteString, forKey: "homeAssistantURL")
+                homeAssistantURL = baseURL.absoluteString
+                homeAssistantToken = ""
+                hasSavedHomeAssistantToken = true
+                homeAssistantClient = client
+                homeAssistantDevices = devices
+                homeAssistantStatus = devices.isEmpty
+                    ? "Connected, but no cinema-safe Home Assistant devices were found."
+                    : "Connected. Found \(devices.count) compatible Home Assistant device\(devices.count == 1 ? "" : "s")."
+            } catch {
+                homeAssistantStatus = "Home Assistant connection failed."
+                errorMessage = error.localizedDescription
+            }
+            isConnectingHomeAssistant = false
+        }
+    }
+
     func start() {
         guard !isRunning, !isStarting else { return }
         guard selectedCount > 0 else {
@@ -98,12 +157,16 @@ final class AppModel: ObservableObject {
         status = "Saving your current light settings…"
         Task {
             savedStates.removeAll()
+            homeAssistantSnapshots.removeAll()
             for index in bulbs.indices where bulbs[index].selected {
                 if let refreshed = await service.inspect(ipAddress: bulbs[index].ipAddress, knownMAC: bulbs[index].macAddress) {
                     bulbs[index] = refreshed
                 }
                 if let state = bulbs[index].pilot { savedStates[bulbs[index].id] = state }
             }
+            homeAssistantSnapshots = homeAssistantDevices
+                .filter { $0.selected && CinemaSafetyPolicy.allowsSelection(for: $0.category) }
+                .map(CinemaSafetyPolicy.snapshot(for:))
 
             analyzer.reset()
             previousTarget = nil
@@ -121,7 +184,7 @@ final class AppModel: ObservableObject {
                 audioTap = tap
                 isRunning = true
                 isStarting = false
-                status = "Listening to Mac audio and syncing \(selectedCount) light\(selectedCount == 1 ? "" : "s")."
+                status = "Listening to Mac audio and syncing \(selectedCount) ambient light\(selectedCount == 1 ? "" : "s")."
                 tickTimer?.invalidate()
                 tickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                     Task { @MainActor in
@@ -153,11 +216,19 @@ final class AppModel: ObservableObject {
                 return (bulb, state)
             }
             for (bulb, state) in restorePairs { service.restore(state, to: bulb) }
+            let snapshots = homeAssistantSnapshots
+            let client = homeAssistantClient
+            if let client, !snapshots.isEmpty {
+                Task {
+                    for snapshot in snapshots { try? await client.restore(snapshot) }
+                }
+            }
             status = restorePairs.isEmpty ? "Stopped." : "Stopped and restoring the previous light settings."
         } else {
             status = "Stopped."
         }
         savedStates.removeAll()
+        homeAssistantSnapshots.removeAll()
     }
 
     private func sendLatestLightingTarget() {
@@ -167,6 +238,12 @@ final class AppModel: ObservableObject {
         guard LightingMapper.meaningfullyDifferent(target, from: lastSentTarget) else { return }
         lastSentTarget = target
         for bulb in bulbs where bulb.selected { service.send(target: target, to: bulb) }
+        if let client = homeAssistantClient {
+            let devices = homeAssistantDevices.filter { $0.selected && $0.supportsLiveAmbientSync }
+            Task {
+                for device in devices { try? await client.sendLiveLighting(target, to: device) }
+            }
+        }
     }
 }
 
@@ -180,10 +257,11 @@ struct ContentView: View {
                 lightsPanel
                 controlPanel
             }
+            homeAssistantPanel
             footer
         }
         .padding(20)
-        .frame(minWidth: 780, idealWidth: 860, minHeight: 570)
+        .frame(minWidth: 780, idealWidth: 860, minHeight: 710)
         .alert("WizCinema", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -299,6 +377,62 @@ struct ContentView: View {
         }
     }
 
+    private var homeAssistantPanel: some View {
+        GroupBox("Home Assistant — mixed-brand devices") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(model.homeAssistantStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField("http://homeassistant.local:8123", text: $model.homeAssistantURL)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.isRunning || model.isConnectingHomeAssistant)
+                    SecureField(model.hasSavedHomeAssistantToken ? "New token (optional)" : "Long-lived access token", text: $model.homeAssistantToken)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.isRunning || model.isConnectingHomeAssistant)
+                    Button(model.isConnectingHomeAssistant ? "Connecting…" : "Connect") {
+                        model.connectHomeAssistant()
+                    }
+                    .disabled(model.isRunning || model.isConnectingHomeAssistant || model.homeAssistantURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if !model.homeAssistantDevices.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach($model.homeAssistantDevices) { $device in
+                                HStack(spacing: 10) {
+                                    Toggle("", isOn: $device.selected)
+                                        .labelsHidden()
+                                        .toggleStyle(.checkbox)
+                                        .disabled(model.isRunning || !CinemaSafetyPolicy.allowsSelection(for: device.category))
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(device.displayName).fontWeight(.medium)
+                                        Text(homeAssistantDetail(device))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Picker("Role", selection: $device.role) {
+                                        ForEach(CinemaRole.allCases) { role in Text(role.rawValue).tag(role) }
+                                    }
+                                    .labelsHidden()
+                                    .frame(width: 135)
+                                    .disabled(model.isRunning || !CinemaSafetyPolicy.allowsSelection(for: device.category))
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 155)
+                }
+
+                Text("Live soundtrack changes are limited to selected color-capable lights. Speakers, covers, fans, switches, TVs, and receivers are discovered for future explicit session controls; locks, security, water, cooking, cameras, garages, and HVAC are not automated.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(4)
+        }
+    }
+
     private var footer: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "lock.shield").foregroundStyle(.secondary)
@@ -330,6 +464,12 @@ struct ContentView: View {
                 .font(.caption.monospacedDigit())
                 .frame(width: 28, alignment: .trailing)
         }
+    }
+
+    private func homeAssistantDetail(_ device: CinemaDevice) -> String {
+        let capabilities = device.capabilities.map(\.rawValue).sorted().joined(separator: ", ")
+        let live = device.supportsLiveAmbientSync ? "Live ambience" : "Session/observe"
+        return "\(device.category.rawValue.capitalized) · \(live) · \(capabilities)"
     }
 }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-struct RGBColor: Equatable, Sendable {
+struct RGBColor: Codable, Equatable, Sendable {
     var red: Double
     var green: Double
     var blue: Double
