@@ -40,6 +40,15 @@ It listens for five seconds, reports the detected energy/frequency mix, and
 does not send any WiZ commands. If it reports no samples, grant System Audio
 Recording permission and try again.
 
+For a temporary whole-pipeline check, `--sync-probe` discovers every reachable
+WiZ bulb, saves each readable state, reacts to audio for five seconds, then
+sends the saved states back. It is intended for troubleshooting only because it
+briefly changes those lights:
+
+```sh
+dist/WizCinema.app/Contents/MacOS/WizCinema --sync-probe
+```
+
 ## Use
 
 1. Select **Discover**. WiZ bulbs on this Mac's Wi-Fi appear after a few

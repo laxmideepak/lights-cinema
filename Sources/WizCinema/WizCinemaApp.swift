@@ -376,6 +376,10 @@ enum WizCinemaEntry {
             runAudioProbe()
             return
         }
+        if CommandLine.arguments.contains("--sync-probe") {
+            runSyncProbe()
+            return
+        }
         WizCinemaApp.main()
     }
 
@@ -427,6 +431,81 @@ enum WizCinemaEntry {
         }
     }
 
+    /// Exercises the entire local pipeline: system audio -> analyzer -> WiZ
+    /// UDP commands. It always restores every light state it successfully read.
+    private static func runSyncProbe() {
+        let lights = discoverInspectableBulbs()
+        let activeLights = lights.filter { $0.pilot != nil }
+        guard !activeLights.isEmpty else {
+            fputs("No WiZ light with a readable pre-session state was found; not changing any lights.\n", stderr)
+            exit(2)
+        }
+
+        let service = WiZService()
+        let analyzer = AudioAnalyzer()
+        let metricsBox = LatestAudioMetricsBox()
+        let tap = SystemAudioTap { samples, sampleRate in
+            metricsBox.record(analyzer.analyze(samples: samples, sampleRate: sampleRate))
+        }
+        let savedStates = Dictionary(uniqueKeysWithValues: activeLights.compactMap { bulb in
+            bulb.pilot.map { (bulb.id, $0) }
+        })
+
+        do {
+            try tap.start()
+            print("Syncing \(activeLights.count) light(s) to Mac audio for five seconds; every light will then be restored.")
+            let settings = LightingSettings()
+            let deadline = Date().addingTimeInterval(5)
+            var previous: LightTarget?
+            var lastSent: LightTarget?
+            while Date() < deadline {
+                let metrics = metricsBox.value
+                let target = LightingMapper.target(metrics: metrics, settings: settings, previous: previous)
+                previous = target
+                if LightingMapper.meaningfullyDifferent(target, from: lastSent) {
+                    for bulb in activeLights { service.send(target: target, to: bulb) }
+                    lastSent = target
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            tap.stop()
+            for bulb in activeLights {
+                if let state = savedStates[bulb.id] { service.restore(state, to: bulb) }
+            }
+            // WiZ transport is UDP and asynchronous; give the final restore
+            // packets a moment to leave the local serial queue before exit.
+            Thread.sleep(forTimeInterval: 0.8)
+            print("Sync probe complete; restore commands were sent for \(savedStates.count) light(s).")
+        } catch {
+            tap.stop()
+            for bulb in activeLights {
+                if let state = savedStates[bulb.id] { service.restore(state, to: bulb) }
+            }
+            fputs("Sync probe could not start: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+
+    private static func discoverInspectableBulbs() -> [WiZBulb] {
+        let resultBox = DiagnosticResultBox()
+        let completion = DispatchSemaphore(value: 0)
+        Task.detached {
+            let service = WiZService()
+            let discovered = await service.discover()
+            var inspected = [WiZBulb]()
+            for bulb in discovered {
+                inspected.append(await service.inspect(ipAddress: bulb.ipAddress, knownMAC: bulb.macAddress) ?? bulb)
+            }
+            resultBox.set(inspected)
+            completion.signal()
+        }
+        guard completion.wait(timeout: .now() + 12) == .success else {
+            fputs("WiZ discovery timed out; not changing any lights.\n", stderr)
+            exit(2)
+        }
+        return resultBox.value()
+    }
+
     private final class DiagnosticResultBox: @unchecked Sendable {
         private let queue = DispatchQueue(label: "WizCinema.diagnostic-result")
         private var stored = [WiZBulb]()
@@ -442,13 +521,32 @@ enum WizCinemaEntry {
 
     private final class AudioProbeResultBox: @unchecked Sendable {
         private let queue = DispatchQueue(label: "WizCinema.audio-probe")
-        private var latest: AudioMetrics?
+        private var strongest: AudioMetrics?
+
+        func record(_ metrics: AudioMetrics) {
+            queue.async {
+                guard let strongest = self.strongest else {
+                    self.strongest = metrics
+                    return
+                }
+                if metrics.level > strongest.level { self.strongest = metrics }
+            }
+        }
+
+        var value: AudioMetrics? {
+            queue.sync { strongest }
+        }
+    }
+
+    private final class LatestAudioMetricsBox: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "WizCinema.live-metrics")
+        private var latest = AudioMetrics()
 
         func record(_ metrics: AudioMetrics) {
             queue.async { self.latest = metrics }
         }
 
-        var value: AudioMetrics? {
+        var value: AudioMetrics {
             queue.sync { latest }
         }
     }
