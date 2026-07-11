@@ -372,6 +372,10 @@ enum WizCinemaEntry {
             runWiZDiagnostic()
             return
         }
+        if CommandLine.arguments.contains("--audio-probe") {
+            runAudioProbe()
+            return
+        }
         WizCinemaApp.main()
     }
 
@@ -399,6 +403,30 @@ enum WizCinemaEntry {
         print("Discovered \(bulbs.count) WiZ light(s).")
     }
 
+    /// A no-light-control validation aid. Run this while film audio is playing
+    /// to confirm that the macOS permission and Core Audio tap are working.
+    private static func runAudioProbe() {
+        let analyzer = AudioAnalyzer()
+        let resultBox = AudioProbeResultBox()
+        let tap = SystemAudioTap { samples, sampleRate in
+            resultBox.record(analyzer.analyze(samples: samples, sampleRate: sampleRate))
+        }
+        do {
+            try tap.start()
+            print("Listening to system audio for five seconds. No WiZ lights will change.")
+            Thread.sleep(forTimeInterval: 5)
+            tap.stop()
+            guard let metrics = resultBox.value else {
+                fputs("No system-audio samples arrived. Check System Audio Recording permission.\n", stderr)
+                exit(2)
+            }
+            print(String(format: "Audio received — energy %.0f%%, bass %.0f%%, mid %.0f%%, treble %.0f%%.", metrics.level * 100, metrics.bass * 100, metrics.mid * 100, metrics.treble * 100))
+        } catch {
+            fputs("Audio probe could not start: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+
     private final class DiagnosticResultBox: @unchecked Sendable {
         private let queue = DispatchQueue(label: "WizCinema.diagnostic-result")
         private var stored = [WiZBulb]()
@@ -409,6 +437,19 @@ enum WizCinemaEntry {
 
         func value() -> [WiZBulb] {
             queue.sync { stored }
+        }
+    }
+
+    private final class AudioProbeResultBox: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "WizCinema.audio-probe")
+        private var latest: AudioMetrics?
+
+        func record(_ metrics: AudioMetrics) {
+            queue.async { self.latest = metrics }
+        }
+
+        var value: AudioMetrics? {
+            queue.sync { latest }
         }
     }
 }

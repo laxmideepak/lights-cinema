@@ -29,6 +29,17 @@ At first start, macOS asks for **System Audio Recording** permission. Allow it.
 If it was denied, enable WizCinema under **System Settings → Privacy & Security
 → Screen & System Audio Recording**, then quit and reopen the app.
 
+To validate audio capture without changing any lights, start a film (or another
+audio source) and run this from Terminal:
+
+```sh
+dist/WizCinema.app/Contents/MacOS/WizCinema --audio-probe
+```
+
+It listens for five seconds, reports the detected energy/frequency mix, and
+does not send any WiZ commands. If it reports no samples, grant System Audio
+Recording permission and try again.
+
 ## Use
 
 1. Select **Discover**. WiZ bulbs on this Mac's Wi-Fi appear after a few
