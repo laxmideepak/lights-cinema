@@ -450,6 +450,20 @@ enum WizCinemaEntry {
         let savedStates = Dictionary(uniqueKeysWithValues: activeLights.compactMap { bulb in
             bulb.pilot.map { (bulb.id, $0) }
         })
+        let stopBox = StopSignalBox()
+        let stopSignals = installStopSignalHandlers(stopBox)
+
+        defer {
+            tap.stop()
+            for bulb in activeLights {
+                if let state = savedStates[bulb.id] { service.restore(state, to: bulb) }
+            }
+            // WiZ transport is UDP and asynchronous; give the final restore
+            // packets a moment to leave the local serial queue before exit.
+            Thread.sleep(forTimeInterval: 0.8)
+            stopSignals.forEach { $0.cancel() }
+            for signalNumber in [SIGINT, SIGTERM, SIGHUP] { Darwin.signal(signalNumber, SIG_DFL) }
+        }
 
         do {
             try tap.start()
@@ -458,7 +472,7 @@ enum WizCinemaEntry {
             let deadline = Date().addingTimeInterval(5)
             var previous: LightTarget?
             var lastSent: LightTarget?
-            while Date() < deadline {
+            while Date() < deadline && !stopBox.isRequested {
                 let metrics = metricsBox.value
                 let target = LightingMapper.target(metrics: metrics, settings: settings, previous: previous)
                 previous = target
@@ -468,21 +482,21 @@ enum WizCinemaEntry {
                 }
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            tap.stop()
-            for bulb in activeLights {
-                if let state = savedStates[bulb.id] { service.restore(state, to: bulb) }
-            }
-            // WiZ transport is UDP and asynchronous; give the final restore
-            // packets a moment to leave the local serial queue before exit.
-            Thread.sleep(forTimeInterval: 0.8)
-            print("Sync probe complete; restore commands were sent for \(savedStates.count) light(s).")
+            print(stopBox.isRequested
+                ? "Sync probe interrupted; restore commands are being sent for \(savedStates.count) light(s)."
+                : "Sync probe complete; restore commands are being sent for \(savedStates.count) light(s).")
         } catch {
-            tap.stop()
-            for bulb in activeLights {
-                if let state = savedStates[bulb.id] { service.restore(state, to: bulb) }
-            }
             fputs("Sync probe could not start: \(error.localizedDescription)\n", stderr)
-            exit(1)
+        }
+    }
+
+    private static func installStopSignalHandlers(_ stopBox: StopSignalBox) -> [DispatchSourceSignal] {
+        [SIGINT, SIGTERM, SIGHUP].map { signalNumber in
+            Darwin.signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: DispatchQueue.global(qos: .userInitiated))
+            source.setEventHandler { stopBox.requestStop() }
+            source.resume()
+            return source
         }
     }
 
@@ -548,6 +562,19 @@ enum WizCinemaEntry {
 
         var value: AudioMetrics {
             queue.sync { latest }
+        }
+    }
+
+    private final class StopSignalBox: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "WizCinema.stop-signal")
+        private var requested = false
+
+        func requestStop() {
+            queue.async { self.requested = true }
+        }
+
+        var isRequested: Bool {
+            queue.sync { requested }
         }
     }
 }
