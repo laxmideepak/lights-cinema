@@ -7,6 +7,7 @@ enum SelfTests {
         try testPilotRestorePreservesSceneBeforeColor()
         try testAnalyzerSeparatesLowAndHighTones()
         try testMapperUsesMinimumBrightnessInSilenceAndSmooths()
+        try testMapperFollowsMovieSceneColour()
         try testHomeAssistantURLAndKeychainAccountNormalization()
         try testHomeAssistantSafeEntityTranslationAndPayload()
         try testCinemaSafetyAndSnapshot()
@@ -63,6 +64,16 @@ enum SelfTests {
         let target = LightingMapper.target(metrics: loud, settings: settings, previous: silence)
         try check(target.brightness > silence.brightness && target.brightness <= 65, "Mapped brightness must stay in range.")
         try check(LightingMapper.meaningfullyDifferent(target, from: silence), "A loud change must be emitted.")
+    }
+
+    private static func testMapperFollowsMovieSceneColour() throws {
+        let settings = LightingSettings(palette: .warm, minimumBrightness: 8, maximumBrightness: 65, sensitivity: 1, responsiveness: 1, sceneInfluence: 1)
+        let previous = LightTarget(color: .black, brightness: 8)
+        let blueScene = SceneMetrics(color: RGBColor(red: 8, green: 66, blue: 235), luminance: 0.27, saturation: 0.96, motion: 0.25, isAvailable: true)
+        let target = LightingMapper.target(metrics: AudioMetrics(), settings: settings, scene: blueScene, previous: previous)
+        try check(target.color.blue > target.color.red * 2, "Movie-scene colour must lead the ambience even during quiet dialogue.")
+        try check(target.brightness > previous.brightness, "A brightened movie frame must gently lift room ambience.")
+        try check(target.brightness < 30, "Cinematic smoothing must avoid an abrupt brightness jump.")
     }
 
     private static func testHomeAssistantURLAndKeychainAccountNormalization() throws {

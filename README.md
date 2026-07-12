@@ -1,8 +1,9 @@
 # WizCinema
 
-WizCinema is a native macOS movie-ambience app. It captures system audio with
-Apple's Core Audio tap API, analyzes it locally, and makes compatible lights
-respond gently. It supports WiZ directly and can also discover compatible
+WizCinema is a native macOS movie-ambience app. It captures system audio and a
+tiny, low-rate colour summary of the main display locally, then makes
+compatible lights follow the film with gentle cinematic transitions. It
+supports WiZ directly and can also discover compatible
 mixed-brand devices through a local Home Assistant hub. It does not need
 BlackHole, Loopback, a Hue bridge, or a cloud API for WiZ.
 
@@ -43,9 +44,11 @@ scripts/build-app.sh
 open dist/WizCinema.app
 ```
 
-At first start, macOS asks for **System Audio Recording** permission. Allow it.
-If it was denied, enable WizCinema under **System Settings → Privacy & Security
-→ Screen & System Audio Recording**, then quit and reopen the app.
+At first start, macOS asks for **System Audio Recording** and, when **Match
+movie colours** is enabled, **Screen Recording** permission. Allow both for
+full scene matching. If either was denied, enable WizCinema under **System
+Settings → Privacy & Security → Screen & System Audio Recording**, then quit
+and reopen the app.
 
 To validate audio capture without changing any lights, start a film (or another
 audio source) and run this from Terminal:
@@ -72,9 +75,11 @@ dist/WizCinema.app/Contents/MacOS/WizCinema --sync-probe
 1. Select **Discover**. WiZ bulbs on this Mac's Wi-Fi appear after a few
    seconds. If broadcast discovery is blocked, enter a bulb's IP address.
 2. Tick the bulbs you want to use, then choose a palette and brightness range.
-3. Press **Start cinema sync** and play a film. The app sends at most ten
-   coalesced updates per second to each light; it avoids flashes and never
-   power-cycles the bulbs in quiet scenes.
+3. Leave **Match movie colours** enabled, choose the desired scene-colour
+   influence, then press **Start cinema sync** and play a film full-screen on
+   the main display. The app samples only a 192×108 in-memory colour summary
+   at six frames per second. It sends coalesced updates to each light with a
+   bounded smoothing filter, avoiding flashes and sudden jumps on fast cuts.
 4. Press **Stop and restore lights** when finished. WizCinema restores the
    pre-session state it read at Start.
 
@@ -95,9 +100,10 @@ intended for movie watching. Increase sensitivity for music-style reactions.
   turn on WiZ local communication; disable client isolation; allow UDP 38899
   across a VLAN; or use the manual IP field. DHCP reservations help if IPs
   change often.
-- **Permission/capture error:** grant System Audio Recording to the app, quit
-  and reopen it. The packaged `.app` is important: launching the bare command
-  line binary makes privacy permission management less clear on recent macOS.
+- **Permission/capture error:** grant System Audio Recording and Screen
+  Recording to the app, quit and reopen it. The packaged `.app` is important:
+  launching the bare command line binary makes privacy permission management
+  less clear on recent macOS.
 - **Meters move but bulbs do not:** rediscover them; check the WiZ security
   toggle and Wi-Fi signal. WiZ local control treats your LAN as the trust
   boundary, so keep the network private.
@@ -114,6 +120,7 @@ is not ideal with headphones.
 
 ## Privacy
 
-All audio analysis happens in memory on this Mac. WizCinema does not save,
-record, upload, or transmit audio. The only network traffic is local UDP control
-messages to the WiZ light addresses you choose.
+All audio and screen-colour analysis happens in memory on this Mac. WizCinema
+does not save, record, upload, or transmit audio or screen frames. The only
+network traffic is local UDP control messages to the WiZ light addresses you
+choose (and the Home Assistant endpoint you explicitly configure).

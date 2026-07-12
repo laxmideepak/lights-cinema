@@ -85,6 +85,7 @@ enum LightingMapper {
     static func target(
         metrics: AudioMetrics,
         settings: LightingSettings,
+        scene: SceneMetrics? = nil,
         previous: LightTarget? = nil
     ) -> LightTarget {
         let minimum = min(max(settings.minimumBrightness, 1), 100)
@@ -108,15 +109,33 @@ enum LightingMapper {
             blue: anchors.bass.blue * bassWeight + anchors.mid.blue * midWeight + anchors.treble.blue * trebleWeight
         )
 
-        if metrics.isSilent, let previous {
+        if metrics.isSilent, scene?.isAvailable != true, let previous {
             color = previous.color
+        }
+
+        if let scene, scene.isAvailable {
+            let influence = min(max(settings.sceneInfluence, 0), 1)
+            // Saturated movie frames take the lead. Low-saturation frames keep
+            // a little audio palette colour, so a grey dialogue scene does not
+            // make the room feel lifeless.
+            let colorWeight = influence * (0.35 + 0.65 * min(max(scene.saturation, 0), 1))
+            color = color.blended(with: scene.color, amount: colorWeight)
+
+            let visualBrightness = minimum + (maximum - minimum) * pow(min(max(scene.luminance, 0), 1), 0.82)
+            desiredBrightness = desiredBrightness * (1 - 0.62 * influence) + visualBrightness * (0.62 * influence)
+            if metrics.beat && !metrics.isSilent {
+                desiredBrightness = min(maximum, desiredBrightness + 4)
+            }
         }
         let desired = LightTarget(color: color.clamped(), brightness: Int(desiredBrightness.rounded()))
         guard let previous else { return desired }
 
         let response = min(max(settings.responsiveness, 0), 1)
-        let brightnessFactor = 0.12 + response * 0.55
-        let colorFactor = 0.08 + response * 0.42
+        // A theatre-like ambience should glide between shots. These bounded
+        // filters avoid strobing even when the film cuts quickly.
+        let motionBoost = scene?.isAvailable == true ? 0.85 + min(max(scene?.motion ?? 0, 0), 1) * 0.15 : 1
+        let brightnessFactor = (0.05 + response * 0.22) * motionBoost
+        let colorFactor = (0.035 + response * 0.18) * motionBoost
         return LightTarget(
             color: previous.color.blended(with: desired.color, amount: colorFactor),
             brightness: Int((Double(previous.brightness) + (Double(desired.brightness - previous.brightness) * brightnessFactor)).rounded())
@@ -128,6 +147,6 @@ enum LightingMapper {
         let colorDifference = abs(new.color.red - old.color.red)
             + abs(new.color.green - old.color.green)
             + abs(new.color.blue - old.color.blue)
-        return abs(new.brightness - old.brightness) >= 2 || colorDifference >= 12
+        return abs(new.brightness - old.brightness) >= 2 || colorDifference >= 9
     }
 }

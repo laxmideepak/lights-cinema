@@ -12,6 +12,11 @@ final class AppModel: ObservableObject {
     @Published var sensitivity = 1.0
     @Published var responsiveness = 0.5
     @Published var metrics = AudioMetrics()
+    @Published var sceneMetrics = SceneMetrics()
+    @Published var sceneSyncEnabled = true
+    @Published var sceneInfluence = 78.0
+    @Published var isSceneSyncActive = false
+    @Published var sceneStatus = "Screen colour matching will start with cinema sync."
     @Published var isDiscovering = false
     @Published var isRunning = false
     @Published var isStarting = false
@@ -32,6 +37,7 @@ final class AppModel: ObservableObject {
     private let service = WiZService()
     private let analyzer = AudioAnalyzer()
     private var audioTap: SystemAudioTap?
+    private var sceneSampler: ScreenSceneSampler?
     private var tickTimer: Timer?
     private var previousTarget: LightTarget?
     private var lastSentTarget: LightTarget?
@@ -56,7 +62,8 @@ final class AppModel: ObservableObject {
             minimumBrightness: minimumBrightness,
             maximumBrightness: maximumBrightness,
             sensitivity: sensitivity,
-            responsiveness: responsiveness
+            responsiveness: responsiveness,
+            sceneInfluence: sceneInfluence / 100
         )
     }
 
@@ -187,6 +194,8 @@ final class AppModel: ObservableObject {
             analyzer.reset()
             previousTarget = nil
             lastSentTarget = nil
+            sceneMetrics = SceneMetrics()
+            isSceneSyncActive = false
             let tap = SystemAudioTap { [weak self] samples, sampleRate in
                 guard let self else { return }
                 let newMetrics = self.analyzer.analyze(samples: samples, sampleRate: sampleRate)
@@ -198,9 +207,31 @@ final class AppModel: ObservableObject {
             do {
                 try tap.start()
                 audioTap = tap
+                if sceneSyncEnabled {
+                    let sampler = ScreenSceneSampler { [weak self] metrics in
+                        DispatchQueue.main.async {
+                            self?.sceneMetrics = metrics
+                            self?.isSceneSyncActive = metrics.isAvailable
+                            self?.sceneStatus = metrics.isAvailable
+                                ? "Matching the main display’s colours with smooth transitions."
+                                : "Waiting for movie colours…"
+                        }
+                    }
+                    do {
+                        try await sampler.start()
+                        sceneSampler = sampler
+                    } catch {
+                        isSceneSyncActive = false
+                        sceneStatus = "Screen colour matching needs Screen Recording permission; audio ambience is still active."
+                    }
+                } else {
+                    sceneStatus = "Audio ambience only. Turn on movie colour matching to follow the screen."
+                }
                 isRunning = true
                 isStarting = false
-                status = "Listening to Mac audio and syncing \(selectedCount) ambient light\(selectedCount == 1 ? "" : "s")."
+                status = sceneSyncEnabled && isSceneSyncActive
+                    ? "Following movie colour and sound across \(selectedCount) ambient light\(selectedCount == 1 ? "" : "s")."
+                    : "Listening to Mac audio and syncing \(selectedCount) ambient light\(selectedCount == 1 ? "" : "s")."
                 tickTimer?.invalidate()
                 tickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                     Task { @MainActor in
@@ -256,11 +287,15 @@ final class AppModel: ObservableObject {
         tickTimer = nil
         audioTap?.stop()
         audioTap = nil
+        sceneSampler?.stop()
+        sceneSampler = nil
         isRunning = false
         isStarting = false
         previousTarget = nil
         lastSentTarget = nil
         metrics = AudioMetrics()
+        sceneMetrics = SceneMetrics()
+        isSceneSyncActive = false
 
         if restore {
             let restorePairs = bulbs.compactMap { bulb -> (WiZBulb, PilotState)? in
@@ -285,7 +320,12 @@ final class AppModel: ObservableObject {
 
     private func sendLatestLightingTarget() {
         guard isRunning else { return }
-        let target = LightingMapper.target(metrics: metrics, settings: settings, previous: previousTarget)
+        let target = LightingMapper.target(
+            metrics: metrics,
+            settings: settings,
+            scene: sceneSyncEnabled && sceneMetrics.isAvailable ? sceneMetrics : nil,
+            previous: previousTarget
+        )
         previousTarget = target
         guard LightingMapper.meaningfullyDifferent(target, from: lastSentTarget) else { return }
         lastSentTarget = target
@@ -303,17 +343,27 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(spacing: 18) {
-            header
-            HStack(alignment: .top, spacing: 16) {
-                lightsPanel
-                controlPanel
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.035, green: 0.05, blue: 0.11), Color(red: 0.08, green: 0.055, blue: 0.17), Color(red: 0.025, green: 0.09, blue: 0.16)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 16) {
+                    header
+                    HStack(alignment: .top, spacing: 16) {
+                        lightsPanel
+                        controlPanel
+                    }
+                    homeAssistantPanel
+                    footer
+                }
+                .padding(22)
             }
-            homeAssistantPanel
-            footer
         }
-        .padding(20)
-        .frame(minWidth: 780, idealWidth: 860, minHeight: 760)
+        .frame(minWidth: 850, idealWidth: 940, minHeight: 790)
         .alert("WizCinema", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -325,23 +375,36 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: model.isRunning ? "waveform.circle.fill" : "sparkles")
-                .font(.system(size: 32, weight: .medium))
-                .foregroundStyle(model.isRunning ? Color.green : Color.accentColor)
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(LinearGradient(colors: [.cyan, .purple, .orange], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Image(systemName: model.isRunning ? "sparkles.tv.fill" : "theatermasks.fill")
+                    .font(.system(size: 27, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 58, height: 58)
             VStack(alignment: .leading, spacing: 2) {
-                Text("WizCinema").font(.title2.bold())
-                Text("Movie sound, gently reflected in your WiZ lights.")
+                Text("WizCinema").font(.title.bold())
+                Text("Immersive movie colour and sound for your room.")
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Label(model.isRunning ? "Live" : "Idle", systemImage: model.isRunning ? "record.circle.fill" : "circle")
-                .foregroundStyle(model.isRunning ? .green : .secondary)
+            VStack(alignment: .trailing, spacing: 3) {
+                Label(model.isRunning ? "Cinema live" : "Ready", systemImage: model.isRunning ? "record.circle.fill" : "circle")
+                    .font(.headline)
+                    .foregroundStyle(model.isRunning ? .green : .secondary)
+                Text(model.isSceneSyncActive ? "Screen colour + audio" : "Audio ambience")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private var lightsPanel: some View {
-        GroupBox("WiZ lights") {
+        GroupBox("Your WiZ lights") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text(model.status).font(.caption).foregroundStyle(.secondary)
@@ -386,13 +449,13 @@ struct ContentView: View {
                         .disabled(model.manualIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isRunning)
                 }
             }
-            .frame(width: 370, alignment: .leading)
+            .frame(width: 390, alignment: .leading)
             .padding(4)
         }
     }
 
     private var controlPanel: some View {
-        GroupBox("Sound response") {
+        GroupBox("Cinema engine") {
             VStack(alignment: .leading, spacing: 14) {
                 Picker("Palette", selection: $model.palette) {
                     ForEach(LightPalette.allCases) { palette in Text(palette.rawValue).tag(palette) }
@@ -403,6 +466,25 @@ struct ContentView: View {
                 sliderRow("Maximum brightness", value: $model.maximumBrightness, range: 15 ... 100, suffix: "%")
                 sliderRow("Sensitivity", value: $model.sensitivity, range: 0.4 ... 2.5, suffix: "×")
                 sliderRow("Responsiveness", value: $model.responsiveness, range: 0 ... 1, suffix: "")
+
+                Divider()
+                Toggle(isOn: $model.sceneSyncEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("Match movie colours", systemImage: "rectangle.inset.filled.and.cursorarrow")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Samples the main display locally; no frames are recorded or saved.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .disabled(model.isRunning)
+                if model.sceneSyncEnabled {
+                    sliderRow("Scene colour influence", value: $model.sceneInfluence, range: 25 ... 100, suffix: "%")
+                    Label(model.sceneStatus, systemImage: model.isSceneSyncActive ? "eye.fill" : "eye.slash")
+                        .font(.caption)
+                        .foregroundStyle(model.isSceneSyncActive ? .cyan : .secondary)
+                }
 
                 Divider()
                 meter("Energy", value: model.metrics.level, color: .white)
@@ -424,7 +506,7 @@ struct ContentView: View {
                 .controlSize(.large)
                 .disabled(model.isStarting || (!model.isRunning && model.selectedCount == 0))
             }
-            .frame(width: 390, alignment: .leading)
+            .frame(width: 420, alignment: .leading)
             .padding(4)
         }
     }
@@ -519,7 +601,7 @@ struct ContentView: View {
     private var footer: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "lock.shield").foregroundStyle(.secondary)
-            Text("First run asks for System Audio Recording. WizCinema analyzes sound only on this Mac; it does not record or upload audio. In WiZ, keep Settings → Security → Allow local communication enabled.")
+            Text("WizCinema analyzes sound and, when enabled, a low-resolution colour summary of your main display only on this Mac. It never records, saves, or uploads audio or video. First use asks for System Audio Recording and Screen Recording permission.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -11,7 +11,10 @@ let package = Package(
         .executableTarget(
             name: "WizCinema",
             path: "Sources/WizCinema",
-            linkerSettings: [.linkedFramework("Security")]
+            linkerSettings: [
+                .linkedFramework("Security"),
+                .linkedFramework("ScreenCaptureKit")
+            ]
         )
     ]
 )
