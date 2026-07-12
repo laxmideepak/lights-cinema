@@ -6,6 +6,9 @@ final class AudioAnalyzer {
     private var noiseFloor: Double = 0.008
     private var runningPeak: Double = 0.08
     private var slowLevel: Double = 0
+    private var previousLevel: Double = 0
+    private var previousSpectrum = [Double]()
+    private var fluxFloor: Double = 0.02
     private var lastBeatTime: TimeInterval = -.infinity
 
     private let lock = NSLock()
@@ -18,6 +21,9 @@ final class AudioAnalyzer {
         noiseFloor = 0.008
         runningPeak = 0.08
         slowLevel = 0
+        previousLevel = 0
+        previousSpectrum.removeAll()
+        fluxFloor = 0.02
         lastBeatTime = -.infinity
     }
 
@@ -64,7 +70,19 @@ final class AudioAnalyzer {
         let silent = rms < max(noiseFloor * 1.25, 0.003)
 
         let previousSlowLevel = slowLevel
-        let dynamics = min(max((normalized - previousSlowLevel) * 2.4, 0), 1)
+        let levelDynamics = min(max((normalized - previousSlowLevel) * 2.4, 0), 1)
+        let spectrum = spectralProfile(samples: samples, sampleRate: sampleRate)
+        let flux: Double
+        if previousSpectrum.count == spectrum.count {
+            let rise = zip(spectrum, previousSpectrum).reduce(0.0) { $0 + max($1.0 - $1.1, 0) }
+            flux = rise / max(spectrum.reduce(0, +), 0.0001)
+        } else {
+            flux = 0
+        }
+        previousSpectrum = spectrum
+        fluxFloor = fluxFloor * 0.94 + flux * 0.06
+        let transient = min(max((flux - fluxFloor) / max(fluxFloor * 3, 0.025), 0), 1)
+        let dynamics = max(levelDynamics, transient)
         let now = Date.timeIntervalSinceReferenceDate
         let beatThreshold = max(0.14, slowLevel * 1.55)
         let beat = !silent && normalized > beatThreshold && now - lastBeatTime > 0.28
@@ -85,16 +103,62 @@ final class AudioAnalyzer {
         } else {
             mood = .ambience
         }
+        let delta = normalized - previousLevel
+        let event: CinemaEvent
+        if silent {
+            event = .quiet
+        } else if beat || transient > 0.5 || dynamics > 0.62 {
+            event = .impact
+        } else if delta > 0.06 {
+            event = .build
+        } else if delta < -0.09 {
+            event = .release
+        } else {
+            event = .settle
+        }
+        previousLevel = normalized
+        let confidence: Double
+        switch mood {
+        case .action: confidence = min(0.96, 0.42 + 0.36 * bassShare + 0.28 * max(dynamics, normalized))
+        case .dialogue: confidence = min(0.9, 0.4 + 0.52 * midShare + 0.12 * (1 - dynamics))
+        case .suspense: confidence = min(0.88, 0.38 + 0.4 * trebleShare + 0.2 * (1 - normalized))
+        case .ambience: confidence = min(0.82, 0.35 + 0.28 * (1 - dynamics) + 0.2 * normalized)
+        }
         return AudioMetrics(
             level: normalized,
             bass: bassShare,
             mid: midShare,
             treble: trebleShare,
             dynamics: dynamics,
+            transient: transient,
             mood: mood,
+            event: event,
+            confidence: confidence,
             beat: beat,
             isSilent: silent
         )
+    }
+
+    /// A compact Goertzel filter bank gives robust onset information without
+    /// retaining audio. It is a standard spectral-analysis technique for a
+    /// small fixed set of cinematic frequency bands.
+    private func spectralProfile(samples: [Float], sampleRate: Double) -> [Double] {
+        let frame = Array(samples.suffix(1_024))
+        guard frame.count >= 128 else { return [] }
+        let frequencies = [55.0, 90, 160, 280, 500, 900, 1_600, 2_800, 5_000, 8_000]
+        return frequencies.map { frequency in
+            let omega = 2 * Double.pi * frequency / sampleRate
+            let coefficient = 2 * cos(omega)
+            var q1 = 0.0
+            var q2 = 0.0
+            for (index, raw) in frame.enumerated() {
+                let window = 0.5 - 0.5 * cos(2 * Double.pi * Double(index) / Double(frame.count - 1))
+                let q0 = Double(raw) * window + coefficient * q1 - q2
+                q2 = q1
+                q1 = q0
+            }
+            return max(q1 * q1 + q2 * q2 - coefficient * q1 * q2, 0)
+        }
     }
 }
 

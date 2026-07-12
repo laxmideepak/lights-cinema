@@ -165,7 +165,10 @@ struct AudioMetrics: Equatable, Sendable {
     var mid: Double = 0
     var treble: Double = 0
     var dynamics: Double = 0
+    var transient: Double = 0
     var mood: CinemaMood = .ambience
+    var event: CinemaEvent = .quiet
+    var confidence: Double = 0
     var beat: Bool = false
     var isSilent: Bool = true
 }
@@ -175,6 +178,14 @@ enum CinemaMood: String, Equatable, Sendable {
     case dialogue = "Dialogue"
     case suspense = "Suspense"
     case action = "Action"
+}
+
+enum CinemaEvent: String, Equatable, Sendable {
+    case settle = "Settle"
+    case build = "Build"
+    case impact = "Impact"
+    case release = "Release"
+    case quiet = "Quiet"
 }
 
 struct LightTarget: Equatable, Sendable {
