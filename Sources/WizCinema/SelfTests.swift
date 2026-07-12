@@ -3,6 +3,7 @@ import Foundation
 enum SelfTests {
     static func run() throws {
         try testDiscoveryRequiresARealResultMAC()
+        try testLIFXDiscoveryAndColorPackets()
         try testSetPilotClampsBrightnessAndColor()
         try testPilotRestorePreservesSceneBeforeColor()
         try testAnalyzerSeparatesLowAndHighTones()
@@ -23,6 +24,20 @@ enum SelfTests {
               let parameters = json["params"] as? [String: Any] else { throw Failure(message: "Could not decode setPilot.") }
         try check(parameters["dimming"] as? Int == 100, "Brightness must clamp.")
         try check(parameters["r"] as? Int == 255 && parameters["g"] as? Int == 0 && parameters["b"] as? Int == 28, "RGB must clamp and round.")
+    }
+
+    private static func testLIFXDiscoveryAndColorPackets() throws {
+        var response = Data(repeating: 0, count: 41)
+        response[32] = 3
+        response[36] = 1
+        response[37] = 0x7C
+        response[38] = 0xDD
+        response.replaceSubrange(8 ..< 14, with: [0xD0, 0x73, 0xD5, 0x12, 0x34, 0x56])
+        guard let service = LIFXProtocol.service(from: response) else { throw Failure(message: "Could not parse LIFX StateService.") }
+        try check(service.port == 56_700 && LIFXProtocol.serial(from: service.target) == "d073d5123456", "LIFX discovery must retain the device target and port.")
+        let packet = LIFXProtocol.setColor(target: service.target, color: RGBColor(red: 255, green: 0, blue: 0), brightness: 50)
+        try check(packet.count == 49 && packet[32] == 102 && packet[33] == 0, "LIFX SetColor packet must use type 102.")
+        try check(packet[37] == 0 && packet[38] == 0, "Red LIFX color must have zero hue.")
     }
 
     private static func testPilotRestorePreservesSceneBeforeColor() throws {

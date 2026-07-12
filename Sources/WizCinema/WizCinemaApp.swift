@@ -6,6 +6,8 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     @Published var bulbs = [WiZBulb]()
+    @Published var lifxLights = [LIFXLight]()
+    @Published var hueBridges = [HueBridge]()
     @Published var palette: LightPalette = .cinema
     @Published var minimumBrightness = 8.0
     @Published var maximumBrightness = 65.0
@@ -21,14 +23,17 @@ final class AppModel: ObservableObject {
     @Published var manualIP = ""
 
     private let service = WiZService()
+    private let lifxService = LIFXService()
+    private let hueDiscoveryService = HueDiscoveryService()
     private let analyzer = AudioAnalyzer()
     private var audioTap: SystemAudioTap?
     private var tickTimer: Timer?
     private var previousTarget: LightTarget?
     private var lastSentTarget: LightTarget?
-    private var savedStates = [String: PilotState]()
+    private var savedWiZStates = [String: PilotState]()
+    private var savedLIFXStates = [String: LIFXState]()
     var selectedCount: Int {
-        bulbs.filter(\.selected).count
+        bulbs.filter(\.selected).count + lifxLights.filter(\.selected).count
     }
 
     var settings: LightingSettings {
@@ -46,11 +51,17 @@ final class AppModel: ObservableObject {
         guard !isDiscovering else { return }
         isDiscovering = true
         errorMessage = nil
-        status = "Looking for WiZ lights…"
+        status = "Discovering local light protocols…"
         let selectedIDs = Set(bulbs.filter(\.selected).map(\.id))
+        let selectedLIFXIDs = Set(lifxLights.filter(\.selected).map(\.id))
 
         Task {
-            let found = await service.discover()
+            async let wizDiscovery = service.discover()
+            async let lifxDiscovery = lifxService.discover()
+            async let hueDiscovery = hueDiscoveryService.discover()
+            let found = await wizDiscovery
+            let lifxFound = await lifxDiscovery
+            hueBridges = await hueDiscovery
             var inspected = [WiZBulb]()
             for bulb in found {
                 var profile = await service.inspect(ipAddress: bulb.ipAddress, knownMAC: bulb.macAddress) ?? bulb
@@ -58,11 +69,21 @@ final class AppModel: ObservableObject {
                 inspected.append(profile)
             }
             bulbs = inspected
+            var inspectedLIFX = [LIFXLight]()
+            for light in lifxFound {
+                var profile = await lifxService.inspect(light)
+                profile.selected = selectedLIFXIDs.isEmpty || selectedLIFXIDs.contains(profile.id)
+                inspectedLIFX.append(profile)
+            }
+            lifxLights = inspectedLIFX
             isDiscovering = false
-            if bulbs.isEmpty {
-                status = "No WiZ lights found. Check Wi‑Fi and Allow local communication."
+            let controllable = bulbs.count + lifxLights.count
+            if controllable == 0, hueBridges.isEmpty {
+                status = "No supported local lights found. Check Wi‑Fi and each brand's local-control setting."
+            } else if controllable == 0 {
+                status = "Found \(hueBridges.count) Hue bridge\(hueBridges.count == 1 ? "" : "s"). Pairing is required before control."
             } else {
-                status = "Found \(bulbs.count) WiZ \(bulbs.count == 1 ? "light" : "lights")."
+                status = "Found \(controllable) controllable local light\(controllable == 1 ? "" : "s")\(hueBridges.isEmpty ? "" : " and \(hueBridges.count) Hue bridge\(hueBridges.count == 1 ? "" : "s")")."
             }
         }
     }
@@ -92,7 +113,7 @@ final class AppModel: ObservableObject {
     func start() {
         guard !isRunning, !isStarting else { return }
         guard selectedCount > 0 else {
-            errorMessage = "Select at least one WiZ light before starting."
+            errorMessage = "Select at least one supported local light before starting."
             return
         }
 
@@ -100,12 +121,18 @@ final class AppModel: ObservableObject {
         errorMessage = nil
         status = "Saving your current light settings…"
         Task {
-            savedStates.removeAll()
+            savedWiZStates.removeAll()
+            savedLIFXStates.removeAll()
             for index in bulbs.indices where bulbs[index].selected {
                 if let refreshed = await service.inspect(ipAddress: bulbs[index].ipAddress, knownMAC: bulbs[index].macAddress) {
                     bulbs[index] = refreshed
                 }
-                if let state = bulbs[index].pilot { savedStates[bulbs[index].id] = state }
+                if let state = bulbs[index].pilot { savedWiZStates[bulbs[index].id] = state }
+            }
+            for index in lifxLights.indices where lifxLights[index].selected {
+                let refreshed = await lifxService.inspect(lifxLights[index])
+                lifxLights[index] = refreshed
+                if let state = refreshed.state { savedLIFXStates[refreshed.id] = state }
             }
 
             analyzer.reset()
@@ -152,15 +179,22 @@ final class AppModel: ObservableObject {
 
         if restore {
             let restorePairs = bulbs.compactMap { bulb -> (WiZBulb, PilotState)? in
-                guard let state = savedStates[bulb.id] else { return nil }
+                guard let state = savedWiZStates[bulb.id] else { return nil }
                 return (bulb, state)
             }
             for (bulb, state) in restorePairs { service.restore(state, to: bulb) }
-            status = restorePairs.isEmpty ? "Stopped." : "Stopped and restoring the previous light settings."
+            let lifxRestorePairs = lifxLights.compactMap { light -> (LIFXLight, LIFXState)? in
+                guard let state = savedLIFXStates[light.id] else { return nil }
+                return (light, state)
+            }
+            for (light, state) in lifxRestorePairs { lifxService.restore(state, to: light) }
+            let restores = restorePairs.count + lifxRestorePairs.count
+            status = restores == 0 ? "Stopped." : "Stopped and restoring the previous light settings."
         } else {
             status = "Stopped."
         }
-        savedStates.removeAll()
+        savedWiZStates.removeAll()
+        savedLIFXStates.removeAll()
     }
 
     private func sendLatestLightingTarget() {
@@ -170,6 +204,7 @@ final class AppModel: ObservableObject {
         guard LightingMapper.meaningfullyDifferent(target, from: lastSentTarget) else { return }
         lastSentTarget = target
         for bulb in bulbs where bulb.selected { service.send(target: target, to: bulb) }
+        for light in lifxLights where light.selected { lifxService.send(target: target, to: light) }
     }
 }
 
@@ -236,7 +271,7 @@ struct ContentView: View {
     }
 
     private var lightsPanel: some View {
-        GroupBox("Your WiZ lights") {
+        GroupBox("Lights on your Wi‑Fi") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text(model.status).font(.caption).foregroundStyle(.secondary)
@@ -249,13 +284,13 @@ struct ContentView: View {
                     .disabled(model.isDiscovering || model.isRunning)
                 }
 
-                if model.bulbs.isEmpty {
+                if model.bulbs.isEmpty && model.lifxLights.isEmpty && model.hueBridges.isEmpty {
                     ContentUnavailableView(
                         "No lights yet",
                         systemImage: "lightbulb.slash",
-                        description: Text("Discover lights on this Wi‑Fi, or add a WiZ light by IP address.")
+                        description: Text("Discovery supports WiZ and LIFX LAN lights, plus Hue bridges that are ready to pair.")
                     )
-                    .frame(height: 190)
+                    .frame(height: 150)
                 } else {
                     VStack(spacing: 8) {
                         ForEach($model.bulbs) { $bulb in
@@ -268,8 +303,33 @@ struct ContentView: View {
                             .toggleStyle(.checkbox)
                             .disabled(model.isRunning)
                         }
+                        ForEach($model.lifxLights) { $light in
+                            Toggle(isOn: $light.selected) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(light.displayName).fontWeight(.medium)
+                                    Text(light.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                            .disabled(model.isRunning)
+                        }
+                        ForEach(model.hueBridges) { bridge in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "link.badge.plus")
+                                    .foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(bridge.displayName).fontWeight(.medium)
+                                    Text(bridge.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("Detected")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.orange)
+                            }
+                            .padding(.vertical, 2)
+                        }
                     }
-                    .frame(minHeight: 190, alignment: .top)
+                    .frame(minHeight: 150, alignment: .top)
                 }
 
                 Divider()
@@ -347,7 +407,7 @@ struct ContentView: View {
     private var footer: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "lock.shield").foregroundStyle(.secondary)
-            Text("WizCinema analyzes soundtrack features only on this Mac. It never sees, records, saves, or uploads your screen or audio. First use asks only for System Audio Recording permission.")
+            Text("Cinema Lights analyzes soundtrack features only on this Mac. It never sees, records, saves, or uploads your screen or audio. Light control uses documented local LAN protocols; Hue bridge discovery may ask Hue's official discovery service only for a bridge address.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

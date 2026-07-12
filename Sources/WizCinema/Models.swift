@@ -121,6 +121,40 @@ struct WiZBulb: Identifiable, Equatable, Sendable {
     }
 }
 
+struct LIFXState: Equatable, Sendable {
+    var hue: UInt16
+    var saturation: UInt16
+    var brightness: UInt16
+    var kelvin: UInt16
+    var power: UInt16
+}
+
+struct LIFXLight: Identifiable, Equatable, Sendable {
+    let id: String
+    var ipAddress: String
+    var port: UInt16
+    var target: Data
+    var label: String
+    var state: LIFXState?
+    var selected: Bool
+
+    var displayName: String {
+        label.isEmpty ? "LIFX \(id.suffix(6).uppercased())" : label
+    }
+
+    var detail: String {
+        "\(ipAddress) · LIFX LAN · Full color"
+    }
+}
+
+struct HueBridge: Identifiable, Equatable, Sendable {
+    let id: String
+    var ipAddress: String
+
+    var displayName: String { "Philips Hue Bridge" }
+    var detail: String { "\(ipAddress) · Press its link button to pair" }
+}
+
 enum LightPalette: String, CaseIterable, Identifiable, Sendable {
     case cinema = "Cinema"
     case warm = "Warm"
