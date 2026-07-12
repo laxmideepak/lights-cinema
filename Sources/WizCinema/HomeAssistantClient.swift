@@ -87,7 +87,7 @@ final class HomeAssistantClient: @unchecked Sendable {
     }
 
     func validateConnection() async throws {
-        let (_, response) = try await request(path: "api/", method: "GET")
+        let (_, response) = try await request(path: "api", method: "GET")
         guard response.statusCode == 200 else { throw responseError(response) }
     }
 

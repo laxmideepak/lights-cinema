@@ -11,6 +11,7 @@ enum SelfTests {
         try testHomeAssistantSafeEntityTranslationAndPayload()
         try testCinemaSafetyAndSnapshot()
         try testExplicitCinemaSessionSafety()
+        try testHomeAssistantHTTPClient()
     }
 
     private static func testDiscoveryRequiresARealResultMAC() throws {
@@ -122,6 +123,75 @@ enum SelfTests {
         try check(settings.normalizedShadePosition == 0 && settings.normalizedFanSpeed == 100, "Cinema percentage settings must clamp safely.")
     }
 
+    private static func testHomeAssistantHTTPClient() throws {
+        MockHomeAssistantURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockHomeAssistantURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let states: [[String: Any]] = [
+            ["entity_id": "media_player.receiver", "state": "playing", "attributes": ["device_class": "receiver", "volume_level": 0.6]]
+        ]
+        MockHomeAssistantURLProtocol.handler = { request in
+            MockHomeAssistantURLProtocol.requests.append(request)
+            MockHomeAssistantURLProtocol.bodies.append(MockHomeAssistantURLProtocol.body(from: request))
+            let path = request.url?.path ?? ""
+            let body: Data
+            switch path {
+            case "/api":
+                body = Data("{}".utf8)
+            case "/api/states":
+                body = try! JSONSerialization.data(withJSONObject: states)
+            case "/api/services/media_player/volume_set":
+                body = Data("[]".utf8)
+            default:
+                body = Data("{}".utf8)
+            }
+            let validPaths: Set<String> = ["/api", "/api/states", "/api/services/media_player/volume_set"]
+            let response = HTTPURLResponse(url: request.url!, statusCode: validPaths.contains(path) ? 200 : 404, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (response, body)
+        }
+
+        try awaitResult {
+            guard let client = HomeAssistantClient(urlString: "http://homeassistant.local:8123", token: "test-token", session: session) else {
+                throw Failure(message: "Mock Home Assistant client could not initialize.")
+            }
+            try await client.validateConnection()
+            let devices = try await client.fetchDevices()
+            var receiver = try require(devices.first, "Mock receiver must be discovered.")
+            receiver.role = .mediaVolume
+            try await client.applyCinemaSession(receiver, settings: CinemaSessionSettings(mediaVolume: 0.4))
+        }
+
+        let requests = MockHomeAssistantURLProtocol.requests
+        let paths = requests.map { $0.url?.path }
+        try check(paths == ["/api", "/api/states", "/api/services/media_player/volume_set"], "Home Assistant API requests must use the documented paths; got \(paths).")
+        try check(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer test-token" }, "Home Assistant requests must authenticate with the supplied bearer token.")
+        guard let payload = MockHomeAssistantURLProtocol.bodies.last ?? nil,
+              let object = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            throw Failure(message: "Mock media volume payload was missing.")
+        }
+        try check(object["entity_id"] as? String == "media_player.receiver", "Explicit media action must target the chosen entity.")
+        try check(object["volume_level"] as? Double == 0.4, "Explicit media action must use the selected normalized volume.")
+        MockHomeAssistantURLProtocol.reset()
+    }
+
+    private static func awaitResult<T>(_ operation: @escaping () async throws -> T) throws -> T {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Result<T, Error>?
+        Task {
+            do {
+                result = .success(try await operation())
+            } catch {
+                result = .failure(error)
+            }
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: .now() + 5) == .success, let result else {
+            throw Failure(message: "Timed out while testing Home Assistant HTTP requests.")
+        }
+        return try result.get()
+    }
+
     private static func sineWave(frequency: Double, sampleRate: Double, frames: Int) -> [Float] {
         (0 ..< frames).map { frame in Float(sin(2 * .pi * frequency * Double(frame) / sampleRate) * 0.4) }
     }
@@ -139,4 +209,45 @@ enum SelfTests {
         let message: String
         var errorDescription: String? { message }
     }
+}
+
+private final class MockHomeAssistantURLProtocol: URLProtocol {
+    static var handler: ((URLRequest) -> (HTTPURLResponse, Data))?
+    static var requests = [URLRequest]()
+    static var bodies = [Data?]()
+
+    static func reset() {
+        handler = nil
+        requests.removeAll()
+        bodies.removeAll()
+    }
+
+    static func body(from request: URLRequest) -> Data? {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data.isEmpty ? nil : data
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let (response, data) = handler(request)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
