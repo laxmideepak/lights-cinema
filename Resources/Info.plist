@@ -25,9 +25,14 @@
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>WizCinema analyzes the Mac's outgoing audio locally to match your WiZ lights to your movie. It never records or uploads audio.</string>
+    <string>WizCinema analyzes the Mac's outgoing audio locally to match your selected lights to your movie. It never records or uploads audio.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>WizCinema needs local-network access to discover and control your WiZ lights.</string>
+	<string>WizCinema needs local-network access to discover and control compatible WiZ, LIFX, Hue, and Nanoleaf lights.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

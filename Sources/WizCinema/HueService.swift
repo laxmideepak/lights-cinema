@@ -13,7 +13,11 @@ enum HueServiceError: LocalizedError {
 }
 
 final class HueCredentialStore: @unchecked Sendable {
-    private let service = "com.local.WizCinema.hue"
+    private let service: String
+
+    init(service: String = "com.local.WizCinema.hue") {
+        self.service = service
+    }
 
     func username(for bridgeID: String) -> String? {
         let query: [CFString: Any] = [

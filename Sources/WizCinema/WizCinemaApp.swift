@@ -9,6 +9,8 @@ final class AppModel: ObservableObject {
     @Published var lifxLights = [LIFXLight]()
     @Published var hueBridges = [HueBridge]()
     @Published var hueLights = [HueLight]()
+    @Published var nanoleafDevices = [NanoleafDevice]()
+    @Published var nanoleafLights = [NanoleafLight]()
     @Published var palette: LightPalette = .cinema
     @Published var minimumBrightness = 8.0
     @Published var maximumBrightness = 65.0
@@ -23,11 +25,14 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var manualIP = ""
     @Published var pairingHueBridgeID: String?
+    @Published var pairingNanoleafID: String?
 
     private let service = WiZService()
     private let lifxService = LIFXService()
     private let hueDiscoveryService = HueDiscoveryService()
     private let hueService = HueService()
+    private let nanoleafDiscoveryService = NanoleafDiscoveryService()
+    private let nanoleafService = NanoleafService()
     private let analyzer = AudioAnalyzer()
     private var audioTap: SystemAudioTap?
     private var tickTimer: Timer?
@@ -36,9 +41,11 @@ final class AppModel: ObservableObject {
     private var savedWiZStates = [String: PilotState]()
     private var savedLIFXStates = [String: LIFXState]()
     private var savedHueStates = [String: HueLightState]()
+    private var savedNanoleafStates = [String: NanoleafState]()
+    private var lastNanoleafSendTime = Date.distantPast
     private var lastHueSendTime = Date.distantPast
     var selectedCount: Int {
-        bulbs.filter(\.selected).count + lifxLights.filter(\.selected).count + hueLights.filter(\.selected).count
+        bulbs.filter(\.selected).count + lifxLights.filter(\.selected).count + hueLights.filter(\.selected).count + nanoleafLights.filter(\.selected).count
     }
 
     var settings: LightingSettings {
@@ -60,11 +67,13 @@ final class AppModel: ObservableObject {
         let selectedIDs = Set(bulbs.filter(\.selected).map(\.id))
         let selectedLIFXIDs = Set(lifxLights.filter(\.selected).map(\.id))
         let selectedHueIDs = Set(hueLights.filter(\.selected).map(\.id))
+        let selectedNanoleafIDs = Set(nanoleafLights.filter(\.selected).map(\.id))
 
         Task {
             async let wizDiscovery = service.discover()
             async let lifxDiscovery = lifxService.discover()
             async let hueDiscovery = hueDiscoveryService.discover()
+            let nanoleafFound = await nanoleafDiscoveryService.discover()
             let found = await wizDiscovery
             let lifxFound = await lifxDiscovery
             let discoveredBridges = await hueDiscovery
@@ -97,14 +106,48 @@ final class AppModel: ObservableObject {
                 })
             }
             hueLights = loadedHueLights
+            nanoleafDevices = nanoleafFound.map { device in
+                var device = device
+                device.isPaired = nanoleafService.credentials.username(for: device.id) != nil
+                return device
+            }
+            var loadedNanoleafLights = [NanoleafLight]()
+            for device in nanoleafDevices where device.isPaired {
+                guard let token = nanoleafService.credentials.username(for: device.id), let discoveredLight = try? await nanoleafService.light(device: device, token: token) else { continue }
+                var light = discoveredLight
+                light.selected = selectedNanoleafIDs.isEmpty || selectedNanoleafIDs.contains(light.id)
+                loadedNanoleafLights.append(light)
+            }
+            nanoleafLights = loadedNanoleafLights
             isDiscovering = false
-            let controllable = bulbs.count + lifxLights.count + hueLights.count
-            if controllable == 0, hueBridges.isEmpty {
+            let controllable = bulbs.count + lifxLights.count + hueLights.count + nanoleafLights.count
+            if controllable == 0, hueBridges.isEmpty && nanoleafDevices.isEmpty {
                 status = "No supported local lights found. Check Wi‑Fi and each brand's local-control setting."
             } else if controllable == 0 {
                 status = "Found \(hueBridges.count) Hue bridge\(hueBridges.count == 1 ? "" : "s"). Pairing is required before control."
             } else {
                 status = "Found \(controllable) controllable local light\(controllable == 1 ? "" : "s")\(hueBridges.isEmpty ? "" : " and \(hueBridges.count) Hue bridge\(hueBridges.count == 1 ? "" : "s")")."
+            }
+        }
+    }
+
+    func pairNanoleaf(_ device: NanoleafDevice) {
+        guard pairingNanoleafID == nil, !isRunning else { return }
+        pairingNanoleafID = device.id
+        errorMessage = nil
+        status = "Put Nanoleaf in API pairing mode, then pairing…"
+        Task {
+            defer { pairingNanoleafID = nil }
+            do {
+                let token = try await nanoleafService.pair(device: device)
+                let light = try await nanoleafService.light(device: device, token: token)
+                if let index = nanoleafDevices.firstIndex(where: { $0.id == device.id }) { nanoleafDevices[index].isPaired = true }
+                nanoleafLights.removeAll { $0.deviceID == device.id }
+                nanoleafLights.append(light)
+                status = "Paired \(light.displayName) for local control."
+            } catch {
+                errorMessage = "Nanoleaf pairing needs its API pairing mode first. \(error.localizedDescription)"
+                status = "Nanoleaf pairing did not complete."
             }
         }
     }
@@ -166,6 +209,7 @@ final class AppModel: ObservableObject {
             savedWiZStates.removeAll()
             savedLIFXStates.removeAll()
             savedHueStates.removeAll()
+            savedNanoleafStates.removeAll()
             for index in bulbs.indices where bulbs[index].selected {
                 if let refreshed = await service.inspect(ipAddress: bulbs[index].ipAddress, knownMAC: bulbs[index].macAddress) {
                     bulbs[index] = refreshed
@@ -180,6 +224,10 @@ final class AppModel: ObservableObject {
             for index in hueLights.indices where hueLights[index].selected {
                 if let refreshed = await hueService.refresh(hueLights[index]) { hueLights[index] = refreshed }
                 savedHueStates[hueLights[index].id] = hueLights[index].state
+            }
+            for index in nanoleafLights.indices where nanoleafLights[index].selected {
+                if let refreshed = await nanoleafService.refresh(nanoleafLights[index]) { nanoleafLights[index] = refreshed }
+                savedNanoleafStates[nanoleafLights[index].id] = nanoleafLights[index].state
             }
 
             analyzer.reset()
@@ -223,6 +271,7 @@ final class AppModel: ObservableObject {
         previousTarget = nil
         lastSentTarget = nil
         lastHueSendTime = .distantPast
+        lastNanoleafSendTime = .distantPast
         metrics = AudioMetrics()
 
         if restore {
@@ -241,7 +290,12 @@ final class AppModel: ObservableObject {
                 return (light, state)
             }
             for (light, state) in hueRestorePairs { Task { await hueService.restore(state, to: light) } }
-            let restores = restorePairs.count + lifxRestorePairs.count + hueRestorePairs.count
+            let nanoleafRestorePairs = nanoleafLights.compactMap { light -> (NanoleafLight, NanoleafState)? in
+                guard let state = savedNanoleafStates[light.id] else { return nil }
+                return (light, state)
+            }
+            for (light, state) in nanoleafRestorePairs { Task { await nanoleafService.restore(state, to: light) } }
+            let restores = restorePairs.count + lifxRestorePairs.count + hueRestorePairs.count + nanoleafRestorePairs.count
             status = restores == 0 ? "Stopped." : "Stopped and restoring the previous light settings."
         } else {
             status = "Stopped."
@@ -249,6 +303,7 @@ final class AppModel: ObservableObject {
         savedWiZStates.removeAll()
         savedLIFXStates.removeAll()
         savedHueStates.removeAll()
+        savedNanoleafStates.removeAll()
     }
 
     private func sendLatestLightingTarget() {
@@ -262,6 +317,10 @@ final class AppModel: ObservableObject {
         if Date().timeIntervalSince(lastHueSendTime) >= 0.2 {
             lastHueSendTime = Date()
             for light in hueLights where light.selected { Task { await hueService.send(target: target, to: light) } }
+        }
+        if Date().timeIntervalSince(lastNanoleafSendTime) >= 0.15 {
+            lastNanoleafSendTime = Date()
+            for light in nanoleafLights where light.selected { Task { await nanoleafService.send(target: target, to: light) } }
         }
     }
 }
@@ -342,11 +401,11 @@ struct ContentView: View {
                     .disabled(model.isDiscovering || model.isRunning)
                 }
 
-                if model.bulbs.isEmpty && model.lifxLights.isEmpty && model.hueBridges.isEmpty {
+                if model.bulbs.isEmpty && model.lifxLights.isEmpty && model.hueBridges.isEmpty && model.nanoleafDevices.isEmpty {
                     ContentUnavailableView(
                         "No lights yet",
                         systemImage: "lightbulb.slash",
-                        description: Text("Discovery supports WiZ and LIFX LAN lights, plus Hue bridges that are ready to pair.")
+                        description: Text("Discovery supports WiZ, LIFX, Hue, and Nanoleaf local-light protocols.")
                     )
                     .frame(height: 150)
                 } else {
@@ -381,6 +440,16 @@ struct ContentView: View {
                             .toggleStyle(.checkbox)
                             .disabled(model.isRunning)
                         }
+                        ForEach($model.nanoleafLights) { $light in
+                            Toggle(isOn: $light.selected) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(light.displayName).fontWeight(.medium)
+                                    Text(light.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                            .disabled(model.isRunning)
+                        }
                         ForEach(model.hueBridges) { bridge in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "link.badge.plus")
@@ -399,6 +468,24 @@ struct ContentView: View {
                                         .buttonStyle(.bordered)
                                         .controlSize(.small)
                                         .disabled(model.pairingHueBridgeID != nil || model.isRunning)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        ForEach(model.nanoleafDevices) { device in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "hexagon.fill").foregroundStyle(.teal)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(device.displayName).fontWeight(.medium)
+                                    Text(device.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if device.isPaired {
+                                    Text("Connected").font(.caption.weight(.medium)).foregroundStyle(.green)
+                                } else {
+                                    Button(model.pairingNanoleafID == device.id ? "Pairing…" : "Pair Nanoleaf") { model.pairNanoleaf(device) }
+                                        .buttonStyle(.bordered).controlSize(.small)
+                                        .disabled(model.pairingNanoleafID != nil || model.isRunning)
                                 }
                             }
                             .padding(.vertical, 2)

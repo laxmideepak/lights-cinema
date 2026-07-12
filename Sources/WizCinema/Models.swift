@@ -179,6 +179,38 @@ struct HueLight: Identifiable, Equatable, Sendable {
     var detail: String { "Hue Bridge · \(supportsColor ? "Full color" : "White")" }
 }
 
+struct NanoleafDevice: Identifiable, Equatable, Sendable {
+    let id: String
+    var host: String
+    var port: Int
+    var isPaired: Bool = false
+
+    var displayName: String { "Nanoleaf \(id)" }
+    var detail: String { "\(host):\(port) · \(isPaired ? "Paired for local control" : "Open API pairing required")" }
+}
+
+struct NanoleafState: Equatable, Sendable {
+    var on: Bool
+    var brightness: Int
+    var hue: Int
+    var saturation: Int
+    var colorTemperature: Int
+}
+
+struct NanoleafLight: Identifiable, Equatable, Sendable {
+    let id: String
+    var deviceID: String
+    var host: String
+    var port: Int
+    var token: String
+    var name: String
+    var state: NanoleafState
+    var selected: Bool
+
+    var displayName: String { name }
+    var detail: String { "Nanoleaf OpenAPI · Full color" }
+}
+
 enum LightPalette: String, CaseIterable, Identifiable, Sendable {
     case cinema = "Cinema"
     case warm = "Warm"

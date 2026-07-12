@@ -30,6 +30,9 @@ APIs or operating arbitrary network devices:
 - **Philips Hue:** automatic official bridge discovery, then direct local
   control after you press the physical bridge button and select **Pair Hue**.
   The bridge-generated credential is stored in this Mac's Keychain.
+- **Nanoleaf:** automatic Bonjour discovery (`_nanoleafapi._tcp`), then direct
+  local OpenAPI control after you enable its 30-second API pairing window and
+  select **Pair Nanoleaf**. Its token is stored in this Mac's Keychain.
 - **Nanoleaf, Govee, Kasa/Tapo and other brands:** not presented as compatible
   until a documented local control and pairing path can be implemented and
   tested.
@@ -78,11 +81,11 @@ dist/WizCinema.app/Contents/MacOS/WizCinema --sync-probe
 
 ## Use
 
-1. Select **Discover**. WiZ and LIFX lights on this Mac's Wi-Fi appear after a
-   few seconds. For Hue, press the bridge button and select **Pair Hue** once;
-   its lights then appear in the same selectable list. If WiZ broadcast
-   discovery is blocked, enter its IP address.
-2. Tick the WiZ, LIFX, or Hue lights you want to use, then choose a palette and brightness range.
+1. Select **Discover**. WiZ, LIFX, Hue, and Nanoleaf devices on this Mac's
+   Wi-Fi appear after a few seconds. Hue and Nanoleaf require one physical
+   pairing step; their lights then appear in the same selectable list. If WiZ
+   broadcast discovery is blocked, enter its IP address.
+2. Tick the WiZ, LIFX, Hue, or Nanoleaf lights you want to use, then choose a palette and brightness range.
 3. Set **Cinema depth**, then press **Start cinema sync** and play a film. The
    app derives local soundtrack moods and events from bass, dialogue-range
    midtones, treble, loudness, dynamics, builds, impacts, and releases. The UI
@@ -119,5 +122,6 @@ All soundtrack analysis happens in memory on this Mac. WizCinema does not see,
 save, record, upload, or transmit your screen or audio. WiZ and LIFX control
 traffic is local UDP sent only to the lights you choose. Hue bridge discovery
 asks Hue's official discovery endpoint only for a local bridge address; after
-pairing, Hue control is direct local HTTPS to that bridge. No soundtrack data
-is included in any provider request.
+pairing, Hue control is direct local HTTPS to that bridge. Nanoleaf discovery
+uses Bonjour and control is direct local OpenAPI. No soundtrack data is
+included in any provider request.
