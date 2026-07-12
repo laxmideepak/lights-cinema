@@ -38,6 +38,32 @@ enum CinemaRole: String, CaseIterable, Codable, Identifiable, Sendable {
     case observeOnly = "Observe only"
 
     var id: String { rawValue }
+
+    static func available(for category: CinemaDeviceCategory) -> [CinemaRole] {
+        switch category {
+        case .light:
+            return [.ambientLight, .observeOnly]
+        case .speaker, .television, .receiver:
+            return [.mediaVolume, .observeOnly]
+        case .cover:
+            return [.shades, .observeOnly]
+        case .fan:
+            return [.fan, .observeOnly]
+        case .switchDevice, .restricted:
+            return [.observeOnly]
+        }
+    }
+}
+
+struct CinemaSessionSettings: Equatable, Sendable {
+    /// Home Assistant uses normalized volume, while cover and fan services use percentages.
+    var mediaVolume: Double = 0.25
+    var shadePosition: Double = 0
+    var fanSpeed: Double = 30
+
+    var normalizedMediaVolume: Double { min(max(mediaVolume, 0), 1) }
+    var normalizedShadePosition: Int { Int(min(max(shadePosition, 0), 100).rounded()) }
+    var normalizedFanSpeed: Int { Int(min(max(fanSpeed, 0), 100).rounded()) }
 }
 
 struct CinemaDeviceState: Codable, Equatable, Sendable {
@@ -90,6 +116,22 @@ enum CinemaSafetyPolicy {
         device.category == .light
             && device.capabilities.contains(.brightness)
             && (device.capabilities.contains(.color) || device.capabilities.contains(.colorTemperature))
+    }
+
+    /// These commands are only sent after the person explicitly presses the
+    /// cinema-session button; they never follow individual soundtrack samples.
+    static func allowsSessionAction(for device: CinemaDevice) -> Bool {
+        switch device.role {
+        case .mediaVolume:
+            return [.speaker, .television, .receiver].contains(device.category)
+                && device.capabilities.contains(.volume)
+        case .shades:
+            return device.category == .cover && device.capabilities.contains(.position)
+        case .fan:
+            return device.category == .fan && device.capabilities.contains(.speed)
+        case .ambientLight, .observeOnly:
+            return false
+        }
     }
 
     static func snapshot(for device: CinemaDevice) -> CinemaDeviceSnapshot {

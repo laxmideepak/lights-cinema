@@ -21,12 +21,14 @@ shade, fan, and vendor-integrated devices there. In WizCinema, enter the local
 Home Assistant URL and a **Long-Lived Access Token**. The token is saved only
 in this Mac's Keychain, never in the project, logs, or UserDefaults.
 
-WizCinema discovers lights, media players, covers, fans, and switches that
-Home Assistant exposes. Only selected colour-capable lights receive continuous
-soundtrack-driven colour/brightness updates. The app deliberately never
-automates locks, garages, alarms, cameras, water, cooking appliances, or HVAC.
-Other safe categories are visible for future explicit, opt-in cinema actions;
-they are not driven rapidly by soundtrack volume.
+WizCinema discovers lights, media players, safe window treatments, fans, and
+switches that Home Assistant exposes. Only selected colour-capable lights
+receive continuous soundtrack-driven colour/brightness updates. The app
+deliberately never automates locks, garages, doors, gates, alarms, cameras,
+water, cooking appliances, or HVAC. Speakers, window shades, and fans can be
+given a one-time, explicit cinema setting in the app; they are never driven
+rapidly by soundtrack volume. Generic switches remain observe-only because a
+switch may represent an unknown appliance.
 
 The app works with headphones because it reads the Mac's outgoing system audio,
 not a microphone. Protected/DRM playback apps may decline to provide audio;
@@ -78,8 +80,11 @@ dist/WizCinema.app/Contents/MacOS/WizCinema --sync-probe
 
 To add Home Assistant devices, use the **Home Assistant — mixed-brand devices**
 section: enter the hub URL and token, choose **Connect**, then select the
-colour-capable lights you want to join live ambience. Non-light devices begin
-unselected and must remain explicit opt-in.
+colour-capable lights you want to join live ambience. For a speaker, safe
+window shade, or fan, select it, choose its matching role, set the desired
+level, and press **Apply selected cinema settings**. This is a single explicit
+action, not an automatic soundtrack command. Non-light devices begin
+unselected.
 
 The conservative defaults (8–65% brightness and medium responsiveness) are
 intended for movie watching. Increase sensitivity for music-style reactions.

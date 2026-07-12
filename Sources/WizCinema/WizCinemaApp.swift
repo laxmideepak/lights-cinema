@@ -24,6 +24,10 @@ final class AppModel: ObservableObject {
     @Published var homeAssistantDevices = [CinemaDevice]()
     @Published var isConnectingHomeAssistant = false
     @Published var homeAssistantStatus = "Connect a local Home Assistant hub to add supported mixed-brand devices."
+    @Published var cinemaVolume = 25.0
+    @Published var cinemaShadePosition = 0.0
+    @Published var cinemaFanSpeed = 30.0
+    @Published var isApplyingCinemaSession = false
 
     private let service = WiZService()
     private let analyzer = AudioAnalyzer()
@@ -54,6 +58,18 @@ final class AppModel: ObservableObject {
             sensitivity: sensitivity,
             responsiveness: responsiveness
         )
+    }
+
+    private var cinemaSessionSettings: CinemaSessionSettings {
+        CinemaSessionSettings(
+            mediaVolume: cinemaVolume / 100,
+            shadePosition: cinemaShadePosition,
+            fanSpeed: cinemaFanSpeed
+        )
+    }
+
+    var selectedSessionDeviceCount: Int {
+        homeAssistantDevices.filter { $0.selected && CinemaSafetyPolicy.allowsSessionAction(for: $0) }.count
     }
 
     func discover() {
@@ -199,6 +215,42 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func applyCinemaSession() {
+        guard !isRunning, !isApplyingCinemaSession else { return }
+        guard let client = homeAssistantClient else {
+            errorMessage = "Connect Home Assistant before applying cinema session settings."
+            return
+        }
+        let devices = homeAssistantDevices.filter { $0.selected && CinemaSafetyPolicy.allowsSessionAction(for: $0) }
+        guard !devices.isEmpty else {
+            errorMessage = "Select a speaker, shade, or fan role before applying a cinema session."
+            return
+        }
+
+        isApplyingCinemaSession = true
+        homeAssistantStatus = "Applying explicit cinema settings…"
+        let settings = cinemaSessionSettings
+        Task {
+            var failures = [String]()
+            var applied = 0
+            for device in devices {
+                do {
+                    try await client.applyCinemaSession(device, settings: settings)
+                    applied += 1
+                } catch {
+                    failures.append(device.displayName)
+                }
+            }
+            isApplyingCinemaSession = false
+            if failures.isEmpty {
+                homeAssistantStatus = "Applied cinema settings to \(applied) device\(applied == 1 ? "" : "s")."
+            } else {
+                homeAssistantStatus = "Applied cinema settings to \(applied) device\(applied == 1 ? "" : "s"); \(failures.count) failed."
+                errorMessage = "Could not apply settings to: \(failures.joined(separator: ", "))."
+            }
+        }
+    }
+
     func stop(restore: Bool = true) {
         tickTimer?.invalidate()
         tickTimer = nil
@@ -261,7 +313,7 @@ struct ContentView: View {
             footer
         }
         .padding(20)
-        .frame(minWidth: 780, idealWidth: 860, minHeight: 710)
+        .frame(minWidth: 780, idealWidth: 860, minHeight: 760)
         .alert("WizCinema", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -413,7 +465,7 @@ struct ContentView: View {
                                     }
                                     Spacer()
                                     Picker("Role", selection: $device.role) {
-                                        ForEach(CinemaRole.allCases) { role in Text(role.rawValue).tag(role) }
+                                        ForEach(CinemaRole.available(for: device.category)) { role in Text(role.rawValue).tag(role) }
                                     }
                                     .labelsHidden()
                                     .frame(width: 135)
@@ -423,13 +475,44 @@ struct ContentView: View {
                         }
                     }
                     .frame(maxHeight: 155)
+                    cinemaSessionControls
                 }
 
-                Text("Live soundtrack changes are limited to selected color-capable lights. Speakers, covers, fans, switches, TVs, and receivers are discovered for future explicit session controls; locks, security, water, cooking, cameras, garages, and HVAC are not automated.")
+                Text("Live soundtrack changes are limited to selected color-capable lights. Cinema settings are only sent once after you press Apply. Locks, security, water, cooking, cameras, garages, gates, doors, and HVAC are not automated.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    private var cinemaSessionControls: some View {
+        let selected = model.homeAssistantDevices.filter { $0.selected && CinemaSafetyPolicy.allowsSessionAction(for: $0) }
+        if !selected.isEmpty {
+            let hasMedia = selected.contains { $0.role == .mediaVolume }
+            let hasShades = selected.contains { $0.role == .shades }
+            let hasFan = selected.contains { $0.role == .fan }
+
+            Divider()
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Explicit cinema session").font(.caption.weight(.semibold))
+                if hasMedia {
+                    sessionSlider("Media volume", value: $model.cinemaVolume, range: 0 ... 100, suffix: "%")
+                }
+                if hasShades {
+                    sessionSlider("Shade position", value: $model.cinemaShadePosition, range: 0 ... 100, suffix: "% open")
+                }
+                if hasFan {
+                    sessionSlider("Fan speed", value: $model.cinemaFanSpeed, range: 0 ... 100, suffix: "%")
+                }
+                Button {
+                    model.applyCinemaSession()
+                } label: {
+                    Label(model.isApplyingCinemaSession ? "Applying…" : "Apply selected cinema settings", systemImage: "theatermasks.fill")
+                }
+                .disabled(model.isRunning || model.isApplyingCinemaSession)
+            }
         }
     }
 
@@ -463,6 +546,17 @@ struct ContentView: View {
             Text("\(Int((min(max(value, 0), 1) * 100).rounded()))")
                 .font(.caption.monospacedDigit())
                 .frame(width: 28, alignment: .trailing)
+        }
+    }
+
+    private func sessionSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, suffix: String) -> some View {
+        HStack(spacing: 10) {
+            Text(label).font(.caption).frame(width: 92, alignment: .leading)
+            Slider(value: value, in: range)
+            Text("\(Int(value.wrappedValue.rounded()))\(suffix)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 58, alignment: .trailing)
         }
     }
 

@@ -10,6 +10,7 @@ enum SelfTests {
         try testHomeAssistantURLAndKeychainAccountNormalization()
         try testHomeAssistantSafeEntityTranslationAndPayload()
         try testCinemaSafetyAndSnapshot()
+        try testExplicitCinemaSessionSafety()
     }
 
     private static func testDiscoveryRequiresARealResultMAC() throws {
@@ -74,14 +75,22 @@ enum SelfTests {
         let states: [[String: Any]] = [
             ["entity_id": "light.cinema", "state": "on", "attributes": ["friendly_name": "Cinema Lamp", "brightness": 128, "supported_color_modes": ["rgb"]]],
             ["entity_id": "media_player.receiver", "state": "playing", "attributes": ["volume_level": 0.35]],
+            ["entity_id": "cover.living_room_shade", "state": "open", "attributes": ["device_class": "shade", "current_position": 100]],
+            ["entity_id": "cover.garage", "state": "closed", "attributes": ["device_class": "garage"]],
+            ["entity_id": "cover.unknown", "state": "closed", "attributes": [:]],
             ["entity_id": "lock.front_door", "state": "locked", "attributes": ["friendly_name": "Front Door"]]
         ]
         let devices = HomeAssistantClient.devices(from: states)
-        try check(devices.count == 2, "Unsafe Home Assistant domains must be excluded.")
+        try check(devices.count == 3, "Unsafe Home Assistant domains and unsafe cover classes must be excluded.")
         let light = try require(devices.first(where: { $0.providerIdentifier == "light.cinema" }), "Safe light must be discovered.")
         try check(light.supportsLiveAmbientSync, "RGB HA light must support live ambient sync.")
+        try check(devices.contains(where: { $0.providerIdentifier == "cover.living_room_shade" }), "Window shades must be discoverable.")
+        try check(!devices.contains(where: { $0.providerIdentifier == "cover.garage" }), "Garage covers must never be exposed as cinema shades.")
+        try check(!devices.contains(where: { $0.providerIdentifier == "cover.unknown" }), "Covers without a safe class must never be guessed safe.")
         let payload = try require(HomeAssistantClient.servicePayload(domain: "light", service: "turn_on", data: ["entity_id": "light.cinema", "brightness_pct": 45]), "Safe light payload must serialize.")
         try check((try JSONSerialization.jsonObject(with: payload) as? [String: Any])?["brightness_pct"] as? Int == 45, "Service payload must retain brightness.")
+        try check(HomeAssistantClient.servicePayload(domain: "cover", service: "set_cover_position", data: ["entity_id": "cover.living_room_shade", "position": 0]) != nil, "A valid explicit shade position must serialize.")
+        try check(HomeAssistantClient.servicePayload(domain: "cover", service: "set_cover_position", data: ["entity_id": "cover.living_room_shade", "position": 101]) == nil, "Out-of-range shade positions must be rejected.")
         try check(HomeAssistantClient.servicePayload(domain: "lock", service: "unlock", data: ["entity_id": "lock.front_door"]) == nil, "Unsafe services must never serialize.")
     }
 
@@ -93,6 +102,19 @@ enum SelfTests {
         var unsafe = device
         unsafe.category = .restricted
         try check(!CinemaSafetyPolicy.allowsSelection(for: unsafe.category), "Restricted categories cannot be automated.")
+    }
+
+    private static func testExplicitCinemaSessionSafety() throws {
+        let speaker = CinemaDevice(id: "ha:media_player.receiver", provider: .homeAssistant, providerIdentifier: "media_player.receiver", displayName: "Receiver", category: .speaker, capabilities: [.volume], state: CinemaDeviceState(), selected: true, role: .mediaVolume)
+        try check(CinemaSafetyPolicy.allowsSessionAction(for: speaker), "Selected media players may receive one explicit volume action.")
+
+        let fan = CinemaDevice(id: "ha:fan.cinema", provider: .homeAssistant, providerIdentifier: "fan.cinema", displayName: "Cinema Fan", category: .fan, capabilities: [.speed], state: CinemaDeviceState(), selected: true, role: .fan)
+        try check(CinemaSafetyPolicy.allowsSessionAction(for: fan), "Selected fans may receive one explicit speed action.")
+        try check(CinemaRole.available(for: .switchDevice) == [.observeOnly], "Generic switches must remain observe-only.")
+
+        let settings = CinemaSessionSettings(mediaVolume: 2, shadePosition: -1, fanSpeed: 130)
+        try check(settings.normalizedMediaVolume == 1, "Cinema volume must clamp to a normalized value.")
+        try check(settings.normalizedShadePosition == 0 && settings.normalizedFanSpeed == 100, "Cinema percentage settings must clamp safely.")
     }
 
     private static func sineWave(frequency: Double, sampleRate: Double, frames: Int) -> [Float] {

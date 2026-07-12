@@ -108,6 +108,35 @@ final class HomeAssistantClient: @unchecked Sendable {
         ])
     }
 
+    /// Applies one deliberate, low-frequency cinema setting. This is separate
+    /// from the 10 Hz light-sync path and is never called from the audio timer.
+    func applyCinemaSession(_ device: CinemaDevice, settings: CinemaSessionSettings) async throws {
+        guard device.provider == .homeAssistant,
+              CinemaSafetyPolicy.allowsSessionAction(for: device) else {
+            throw HomeAssistantError.unsafeOperation
+        }
+
+        switch device.role {
+        case .mediaVolume:
+            _ = try await callService(domain: "media_player", service: "volume_set", data: [
+                "entity_id": device.providerIdentifier,
+                "volume_level": settings.normalizedMediaVolume
+            ])
+        case .shades:
+            _ = try await callService(domain: "cover", service: "set_cover_position", data: [
+                "entity_id": device.providerIdentifier,
+                "position": settings.normalizedShadePosition
+            ])
+        case .fan:
+            _ = try await callService(domain: "fan", service: "set_percentage", data: [
+                "entity_id": device.providerIdentifier,
+                "percentage": settings.normalizedFanSpeed
+            ])
+        case .ambientLight, .observeOnly:
+            throw HomeAssistantError.unsafeOperation
+        }
+    }
+
     func restore(_ snapshot: CinemaDeviceSnapshot) async throws {
         guard snapshot.provider == .homeAssistant else { return }
         switch snapshot.category {
@@ -167,8 +196,8 @@ final class HomeAssistantClient: @unchecked Sendable {
     private static func device(from state: [String: Any]) -> CinemaDevice? {
         guard let entityID = state["entity_id"] as? String else { return nil }
         let domain = entityID.split(separator: ".").first.map(String.init) ?? ""
-        guard let category = category(for: domain), CinemaSafetyPolicy.allowsSelection(for: category) else { return nil }
         let attributes = state["attributes"] as? [String: Any] ?? [:]
+        guard let category = category(for: domain, attributes: attributes), CinemaSafetyPolicy.allowsSelection(for: category) else { return nil }
         let capabilities = capabilities(for: domain, attributes: attributes)
         let friendlyName = attributes["friendly_name"] as? String ?? entityID
         return CinemaDevice(
@@ -180,11 +209,17 @@ final class HomeAssistantClient: @unchecked Sendable {
         )
     }
 
-    private static func category(for domain: String) -> CinemaDeviceCategory? {
+    private static func category(for domain: String, attributes: [String: Any]) -> CinemaDeviceCategory? {
         switch domain {
         case "light": return .light
         case "media_player": return .speaker
-        case "cover": return .cover
+        case "cover":
+            // HA's cover domain can also represent a garage, door, or gate.
+            // Without an explicit safe device class we keep the device out of
+            // the cinema bridge rather than guessing what can move.
+            let allowedClasses: Set<String> = ["awning", "blind", "curtain", "shade", "shutter", "window"]
+            guard let deviceClass = attributes["device_class"] as? String else { return nil }
+            return allowedClasses.contains(deviceClass.lowercased()) ? .cover : nil
         case "fan": return .fan
         case "switch": return .switchDevice
         default: return nil
@@ -227,10 +262,24 @@ final class HomeAssistantClient: @unchecked Sendable {
     private static func permitted(domain: String, service: String, data: [String: Any]) -> Bool {
         guard let entityID = data["entity_id"] as? String, entityID.hasPrefix("\(domain).") else { return false }
         switch (domain, service) {
-        case ("light", "turn_on"), ("light", "turn_off"), ("media_player", "volume_set"):
+        case ("light", "turn_on"), ("light", "turn_off"):
             return true
+        case ("media_player", "volume_set"):
+            return normalizedNumber(data["volume_level"], range: 0 ... 1) != nil
+        case ("cover", "set_cover_position"), ("fan", "set_percentage"):
+            let key = domain == "cover" ? "position" : "percentage"
+            return normalizedNumber(data[key], range: 0 ... 100) != nil
         default:
             return false
         }
+    }
+
+    private static func normalizedNumber(_ value: Any?, range: ClosedRange<Double>) -> Double? {
+        let number: Double?
+        if let value = value as? Double { number = value }
+        else if let value = value as? Int { number = Double(value) }
+        else { number = nil }
+        guard let number, number.isFinite, range.contains(number) else { return nil }
+        return number
     }
 }
