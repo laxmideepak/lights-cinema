@@ -29,10 +29,6 @@ struct RGBColor: Codable, Equatable, Sendable {
         return (Int(color.red.rounded()), Int(color.green.rounded()), Int(color.blue.rounded()))
     }
 
-    var relativeLuminance: Double {
-        let color = clamped()
-        return min(max((0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue) / 255, 0), 1)
-    }
 }
 
 struct PilotState: Codable, Equatable, Sendable {
@@ -168,18 +164,17 @@ struct AudioMetrics: Equatable, Sendable {
     var bass: Double = 0
     var mid: Double = 0
     var treble: Double = 0
+    var dynamics: Double = 0
+    var mood: CinemaMood = .ambience
     var beat: Bool = false
     var isSilent: Bool = true
 }
 
-/// A deliberately tiny summary of a captured movie frame. WizCinema never
-/// stores, transmits, or displays the frame itself.
-struct SceneMetrics: Equatable, Sendable {
-    var color: RGBColor = .black
-    var luminance: Double = 0
-    var saturation: Double = 0
-    var motion: Double = 0
-    var isAvailable: Bool = false
+enum CinemaMood: String, Equatable, Sendable {
+    case ambience = "Ambient"
+    case dialogue = "Dialogue"
+    case suspense = "Suspense"
+    case action = "Action"
 }
 
 struct LightTarget: Equatable, Sendable {
@@ -193,5 +188,5 @@ struct LightingSettings: Equatable, Sendable {
     var maximumBrightness: Double = 65
     var sensitivity: Double = 1
     var responsiveness: Double = 0.5
-    var sceneInfluence: Double = 0.78
+    var cinemaDepth: Double = 0.72
 }

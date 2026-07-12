@@ -7,7 +7,7 @@ enum SelfTests {
         try testPilotRestorePreservesSceneBeforeColor()
         try testAnalyzerSeparatesLowAndHighTones()
         try testMapperUsesMinimumBrightnessInSilenceAndSmooths()
-        try testMapperFollowsMovieSceneColour()
+        try testAudioMoodDrivesCinematicMotion()
         try testHomeAssistantURLAndKeychainAccountNormalization()
         try testHomeAssistantSafeEntityTranslationAndPayload()
         try testCinemaSafetyAndSnapshot()
@@ -66,14 +66,18 @@ enum SelfTests {
         try check(LightingMapper.meaningfullyDifferent(target, from: silence), "A loud change must be emitted.")
     }
 
-    private static func testMapperFollowsMovieSceneColour() throws {
-        let settings = LightingSettings(palette: .warm, minimumBrightness: 8, maximumBrightness: 65, sensitivity: 1, responsiveness: 1, sceneInfluence: 1)
+    private static func testAudioMoodDrivesCinematicMotion() throws {
+        let settings = LightingSettings(palette: .warm, minimumBrightness: 8, maximumBrightness: 65, sensitivity: 1, responsiveness: 1, cinemaDepth: 1)
         let previous = LightTarget(color: .black, brightness: 8)
-        let blueScene = SceneMetrics(color: RGBColor(red: 8, green: 66, blue: 235), luminance: 0.27, saturation: 0.96, motion: 0.25, isAvailable: true)
-        let target = LightingMapper.target(metrics: AudioMetrics(), settings: settings, scene: blueScene, previous: previous)
-        try check(target.color.blue > target.color.red * 2, "Movie-scene colour must lead the ambience even during quiet dialogue.")
-        try check(target.brightness > previous.brightness, "A brightened movie frame must gently lift room ambience.")
-        try check(target.brightness < 30, "Cinematic smoothing must avoid an abrupt brightness jump.")
+        let action = AudioMetrics(level: 0.9, bass: 0.66, mid: 0.2, treble: 0.14, dynamics: 0.9, mood: .action, beat: true, isSilent: false)
+        let actionTarget = LightingMapper.target(metrics: action, settings: settings, previous: previous)
+        try check(actionTarget.brightness > previous.brightness, "Action audio must lift room ambience.")
+        try check(actionTarget.brightness < 30, "Cinematic smoothing must avoid an abrupt action jump.")
+        try check(actionTarget.color.red > actionTarget.color.blue, "Action mood must favour the controlled warm accent.")
+
+        let dialogue = AudioMetrics(level: 0.36, bass: 0.18, mid: 0.64, treble: 0.18, dynamics: 0.04, mood: .dialogue, beat: false, isSilent: false)
+        let dialogueTarget = LightingMapper.target(metrics: dialogue, settings: settings)
+        try check(dialogueTarget.brightness < 40, "Dialogue mood must stay restrained for comfortable viewing.")
     }
 
     private static func testHomeAssistantURLAndKeychainAccountNormalization() throws {

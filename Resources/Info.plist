@@ -28,8 +28,6 @@
     <string>WizCinema analyzes the Mac's outgoing audio locally to match your WiZ lights to your movie. It never records or uploads audio.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>WizCinema needs local-network access to discover and control your WiZ lights.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>WizCinema samples movie colours on your selected display to create smooth local cinema lighting. It never records, saves, or uploads screen content.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
