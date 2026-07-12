@@ -303,6 +303,7 @@ final class AppModel: ObservableObject {
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var homeAssistantExpanded = false
 
     var body: some View {
         ZStack {
@@ -323,6 +324,8 @@ struct ContentView: View {
                     footer
                 }
                 .padding(22)
+                .frame(maxWidth: 980)
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(minWidth: 850, idealWidth: 940, minHeight: 790)
@@ -338,13 +341,10 @@ struct ContentView: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(LinearGradient(colors: [.cyan, .purple, .orange], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Image(systemName: model.isRunning ? "sparkles.tv.fill" : "theatermasks.fill")
-                    .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .frame(width: 58, height: 58)
             VStack(alignment: .leading, spacing: 2) {
                 Text("WizCinema").font(.title.bold())
@@ -468,7 +468,7 @@ struct ContentView: View {
     }
 
     private var homeAssistantPanel: some View {
-        GroupBox("Home Assistant — mixed-brand devices") {
+        DisclosureGroup(isExpanded: $homeAssistantExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(model.homeAssistantStatus)
                     .font(.caption)
@@ -520,8 +520,22 @@ struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .padding(4)
+            .padding(.top, 10)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "house.and.flag.fill")
+                    .foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Home Assistant devices").font(.headline)
+                    Text("Optional mixed-brand lights, speakers, shades, and fans")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
+        .tint(.cyan)
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     @ViewBuilder
