@@ -6,10 +6,19 @@ final class AudioAnalyzer {
     private var noiseFloor: Double = 0.008
     private var runningPeak: Double = 0.08
     private var slowLevel: Double = 0
-    private var previousLevel: Double = 0
+    private var slowRMS: Double = 0
     private var previousSpectrum = [Double]()
     private var fluxFloor: Double = 0.02
+    private var elapsedSeconds: TimeInterval = 0
     private var lastBeatTime: TimeInterval = -.infinity
+    private var moodEvidence = [Double](repeating: 0.25, count: 4)
+    private var stableMood: CinemaMood = .ambience
+    private var pendingMood: CinemaMood?
+    private var pendingMoodSeconds: Double = 0
+    private var risingFrames = 0
+    private var fallingFrames = 0
+    private var heldEvent: CinemaEvent = .quiet
+    private var eventHoldUntil: TimeInterval = 0
 
     private let lock = NSLock()
 
@@ -21,10 +30,19 @@ final class AudioAnalyzer {
         noiseFloor = 0.008
         runningPeak = 0.08
         slowLevel = 0
-        previousLevel = 0
+        slowRMS = 0
         previousSpectrum.removeAll()
         fluxFloor = 0.02
+        elapsedSeconds = 0
         lastBeatTime = -.infinity
+        moodEvidence = [Double](repeating: 0.25, count: 4)
+        stableMood = .ambience
+        pendingMood = nil
+        pendingMoodSeconds = 0
+        risingFrames = 0
+        fallingFrames = 0
+        heldEvent = .quiet
+        eventHoldUntil = 0
     }
 
     func analyze(samples: [Float], sampleRate: Double) -> AudioMetrics {
@@ -69,8 +87,13 @@ final class AudioAnalyzer {
         let normalized = min(max((rms - noiseFloor) / usableRange, 0), 1)
         let silent = rms < max(noiseFloor * 1.25, 0.003)
 
-        let previousSlowLevel = slowLevel
-        let levelDynamics = min(max((normalized - previousSlowLevel) * 2.4, 0), 1)
+        let frameDuration = Double(samples.count) / sampleRate
+        elapsedSeconds += frameDuration
+        if slowRMS == 0 { slowRMS = rms }
+        let energySlope = (rms - slowRMS) / max(slowRMS, 0.015)
+        let rmsAlpha = 1 - exp(-frameDuration / 1.2)
+        slowRMS += (rms - slowRMS) * rmsAlpha
+        let levelDynamics = min(max(energySlope * 0.55, 0), 1)
         let spectrum = spectralProfile(samples: samples, sampleRate: sampleRate)
         let flux: Double
         if previousSpectrum.count == spectrum.count {
@@ -83,7 +106,7 @@ final class AudioAnalyzer {
         fluxFloor = fluxFloor * 0.94 + flux * 0.06
         let transient = min(max((flux - fluxFloor) / max(fluxFloor * 3, 0.025), 0), 1)
         let dynamics = max(levelDynamics, transient)
-        let now = Date.timeIntervalSinceReferenceDate
+        let now = elapsedSeconds
         let beatThreshold = max(0.14, slowLevel * 1.55)
         let beat = !silent && normalized > beatThreshold && now - lastBeatTime > 0.28
         if beat { lastBeatTime = now }
@@ -93,37 +116,67 @@ final class AudioAnalyzer {
         let bassShare = min(max(bass / bandTotal, 0), 1)
         let midShare = min(max(mid / bandTotal, 0), 1)
         let trebleShare = min(max(treble / bandTotal, 0), 1)
-        let mood: CinemaMood
-        if !silent && ((beat && normalized > 0.28) || (bassShare > 0.52 && dynamics > 0.18)) {
-            mood = .action
-        } else if silent || (normalized < 0.2 && trebleShare > 0.34) {
-            mood = .suspense
-        } else if midShare > 0.46 && normalized < 0.58 {
-            mood = .dialogue
-        } else {
-            mood = .ambience
+        let rawMoodEvidence = [
+            0.12 + 0.68 * bassShare + 0.58 * dynamics + 0.20 * normalized,
+            0.15 + 0.82 * midShare + 0.30 * (1 - dynamics) + 0.14 * (normalized > 0.08 && normalized < 0.7 ? 1 : 0),
+            0.16 + 0.34 * trebleShare + 0.34 * (1 - normalized) + 0.24 * (1 - dynamics),
+            0.20 + 0.32 * (1 - dynamics) + 0.22 * normalized + 0.16 * (1 - max(bassShare, midShare, trebleShare))
+        ]
+        // A 650 ms evidence window and a 550 ms handoff prevent the room from
+        // reacting to every syllable while still following a scene transition.
+        let evidenceAlpha = 1 - exp(-frameDuration / 0.65)
+        for index in moodEvidence.indices {
+            moodEvidence[index] += (rawMoodEvidence[index] - moodEvidence[index]) * evidenceAlpha
         }
-        let delta = normalized - previousLevel
-        let event: CinemaEvent
+        let ranked = moodEvidence.enumerated().sorted { $0.element > $1.element }
+        let candidateMood = Self.mood(at: ranked[0].offset)
+        let candidateScore = ranked[0].element
+        let runnerUpScore = ranked[1].element
+        let clarity = min(max((candidateScore - runnerUpScore) / max(candidateScore, 0.0001), 0), 1)
+        if candidateMood == stableMood {
+            pendingMood = nil
+            pendingMoodSeconds = 0
+        } else if candidateScore > moodEvidence[Self.index(of: stableMood)] * 1.12, clarity > 0.12 {
+            if pendingMood == candidateMood {
+                pendingMoodSeconds += frameDuration
+            } else {
+                pendingMood = candidateMood
+                pendingMoodSeconds = frameDuration
+            }
+            if pendingMoodSeconds >= 0.55 {
+                stableMood = candidateMood
+                pendingMood = nil
+                pendingMoodSeconds = 0
+            }
+        } else {
+            pendingMood = nil
+            pendingMoodSeconds = 0
+        }
+        let signalQuality = min(max((rms - noiseFloor) / max(runningPeak * 0.38, 0.012), 0), 1)
+        let stability = candidateMood == stableMood ? 1 : max(0, 1 - pendingMoodSeconds / 0.55)
+        let confidence = silent
+            ? 0
+            : min(0.96, 0.10 + 0.43 * clarity + 0.27 * signalQuality + 0.20 * stability)
+
+        risingFrames = energySlope > 0.08 ? risingFrames + 1 : max(risingFrames - 1, 0)
+        fallingFrames = energySlope < -0.10 ? fallingFrames + 1 : max(fallingFrames - 1, 0)
+        let candidateEvent: CinemaEvent
         if silent {
-            event = .quiet
-        } else if beat || transient > 0.5 || dynamics > 0.62 {
-            event = .impact
-        } else if delta > 0.06 {
-            event = .build
-        } else if delta < -0.09 {
-            event = .release
+            candidateEvent = .quiet
+        } else if transient > 0.68 && normalized > 0.28 {
+            candidateEvent = .stinger
+        } else if beat && transient > 0.18 {
+            candidateEvent = .pulse
+        } else if risingFrames >= 4 && normalized > 0.18 && dynamics > 0.10 {
+            candidateEvent = .crescendo
+        } else if stableMood == .dialogue && confidence > 0.48 && dynamics < 0.25 {
+            candidateEvent = .dialogueLine
+        } else if fallingFrames >= 3 {
+            candidateEvent = .release
         } else {
-            event = .settle
+            candidateEvent = .settle
         }
-        previousLevel = normalized
-        let confidence: Double
-        switch mood {
-        case .action: confidence = min(0.96, 0.42 + 0.36 * bassShare + 0.28 * max(dynamics, normalized))
-        case .dialogue: confidence = min(0.9, 0.4 + 0.52 * midShare + 0.12 * (1 - dynamics))
-        case .suspense: confidence = min(0.88, 0.38 + 0.4 * trebleShare + 0.2 * (1 - normalized))
-        case .ambience: confidence = min(0.82, 0.35 + 0.28 * (1 - dynamics) + 0.2 * normalized)
-        }
+        let event = heldEvent(for: candidateEvent, silent: silent, now: now)
         return AudioMetrics(
             level: normalized,
             bass: bassShare,
@@ -131,12 +184,52 @@ final class AudioAnalyzer {
             treble: trebleShare,
             dynamics: dynamics,
             transient: transient,
-            mood: mood,
+            mood: stableMood,
             event: event,
             confidence: confidence,
             beat: beat,
             isSilent: silent
         )
+    }
+
+    private func heldEvent(for candidate: CinemaEvent, silent: Bool, now: TimeInterval) -> CinemaEvent {
+        guard !silent else {
+            heldEvent = .quiet
+            eventHoldUntil = now
+            return .quiet
+        }
+        let hold: TimeInterval
+        switch candidate {
+        case .stinger: hold = 0.42
+        case .pulse: hold = 0.24
+        case .crescendo: hold = 0.34
+        case .release: hold = 0.2
+        case .dialogueLine, .settle, .quiet: hold = 0
+        }
+        if hold > 0 {
+            heldEvent = candidate
+            eventHoldUntil = now + hold
+            return candidate
+        }
+        return now < eventHoldUntil ? heldEvent : candidate
+    }
+
+    private static func mood(at index: Int) -> CinemaMood {
+        switch index {
+        case 0: return .action
+        case 1: return .dialogue
+        case 2: return .suspense
+        default: return .ambience
+        }
+    }
+
+    private static func index(of mood: CinemaMood) -> Int {
+        switch mood {
+        case .action: return 0
+        case .dialogue: return 1
+        case .suspense: return 2
+        case .ambience: return 3
+        }
     }
 
     /// A compact Goertzel filter bank gives robust onset information without
@@ -185,6 +278,21 @@ enum LightingMapper {
         case .ambience:
             desiredBrightness = minimum + (desiredBrightness - minimum) * 0.75
         }
+        switch metrics.event {
+        case .stinger:
+            desiredBrightness += 12 * depth
+        case .pulse:
+            desiredBrightness += 6 * depth
+        case .crescendo:
+            desiredBrightness += 8 * depth
+        case .dialogueLine:
+            desiredBrightness = minimum + (desiredBrightness - minimum) * 0.82
+        case .release:
+            desiredBrightness -= 5 * depth
+        case .settle, .quiet:
+            break
+        }
+        desiredBrightness = min(max(desiredBrightness, minimum), maximum)
         if metrics.isSilent { desiredBrightness = minimum }
 
         let anchors = settings.palette.anchors
@@ -209,6 +317,26 @@ enum LightingMapper {
         case .ambience: moodAccent = RGBColor(red: 82, green: 190, blue: 235)
         }
         color = color.blended(with: moodAccent, amount: 0.11 + 0.19 * depth)
+        let eventAccent: RGBColor?
+        switch metrics.event {
+        case .stinger: eventAccent = RGBColor(red: 255, green: 232, blue: 195)
+        case .pulse: eventAccent = RGBColor(red: 255, green: 78, blue: 104)
+        case .crescendo: eventAccent = RGBColor(red: 255, green: 166, blue: 88)
+        case .dialogueLine: eventAccent = RGBColor(red: 255, green: 194, blue: 128)
+        case .release: eventAccent = RGBColor(red: 96, green: 144, blue: 255)
+        case .settle, .quiet: eventAccent = nil
+        }
+        if let eventAccent {
+            let accentAmount: Double
+            switch metrics.event {
+            case .stinger: accentAmount = 0.24 * depth
+            case .pulse: accentAmount = 0.14 * depth
+            case .crescendo: accentAmount = 0.16 * depth
+            case .dialogueLine, .release: accentAmount = 0.08 * depth
+            case .settle, .quiet: accentAmount = 0
+            }
+            color = color.blended(with: eventAccent, amount: accentAmount)
+        }
         let desired = LightTarget(color: color.clamped(), brightness: Int(desiredBrightness.rounded()))
         guard let previous else { return desired }
 
@@ -225,9 +353,18 @@ enum LightingMapper {
         }
         let brightnessFactor = min((0.04 + response * 0.18) * moodMotion, 0.26)
         let colorFactor = min((0.03 + response * 0.14) * moodMotion, 0.21)
+        let eventMotion: Double
+        switch metrics.event {
+        case .stinger: eventMotion = 1.85
+        case .pulse: eventMotion = 1.35
+        case .crescendo: eventMotion = 1.25
+        case .dialogueLine: eventMotion = 0.68
+        case .release: eventMotion = 0.76
+        case .settle, .quiet: eventMotion = 1
+        }
         return LightTarget(
-            color: previous.color.blended(with: desired.color, amount: colorFactor),
-            brightness: Int((Double(previous.brightness) + (Double(desired.brightness - previous.brightness) * brightnessFactor)).rounded())
+            color: previous.color.blended(with: desired.color, amount: min(colorFactor * eventMotion, 0.31)),
+            brightness: Int((Double(previous.brightness) + (Double(desired.brightness - previous.brightness) * min(brightnessFactor * eventMotion, 0.42))).rounded())
         )
     }
 

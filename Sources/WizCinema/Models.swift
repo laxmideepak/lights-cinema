@@ -216,8 +216,10 @@ enum CinemaMood: String, Equatable, Sendable {
 
 enum CinemaEvent: String, Equatable, Sendable {
     case settle = "Settle"
-    case build = "Build"
-    case impact = "Impact"
+    case dialogueLine = "Dialogue line"
+    case crescendo = "Crescendo"
+    case pulse = "Pulse"
+    case stinger = "Stinger"
     case release = "Release"
     case quiet = "Quiet"
 }

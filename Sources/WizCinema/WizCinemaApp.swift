@@ -347,7 +347,7 @@ struct ContentView: View {
     }
 
     private var controlPanel: some View {
-        GroupBox("Cinema engine") {
+        GroupBox("Soundtrack conductor") {
             VStack(alignment: .leading, spacing: 14) {
                 Picker("Palette", selection: $model.palette) {
                     ForEach(LightPalette.allCases) { palette in Text(palette.rawValue).tag(palette) }
@@ -363,18 +363,18 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Audio-only cinematic intelligence", systemImage: "waveform.and.mic")
                         .font(.subheadline.weight(.semibold))
-                    Text("Local mood inference follows dialogue, suspense, ambience, and action — without seeing or recording your screen.")
+                    Text("Local scene analysis follows dialogue, suspense, ambience, action, and soundtrack events — without seeing or recording your screen.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     sliderRow("Cinema depth", value: $model.cinemaDepth, range: 20 ... 100, suffix: "%")
                     HStack {
                         Label("Mood: \(model.metrics.mood.rawValue)", systemImage: moodSymbol(model.metrics.mood))
                         Spacer()
-                        Label("Event: \(model.metrics.event.rawValue)", systemImage: "waveform.path.ecg")
+                        Label("Event: \(model.metrics.event.rawValue)", systemImage: eventSymbol(model.metrics.event))
                     }
                         .font(.caption)
                         .foregroundStyle(.cyan)
-                    Text("Inference confidence \(Int((model.metrics.confidence * 100).rounded()))% — a local signal-quality score, not a claim to know the movie frame.")
+                    Text("Scene confidence \(Int((model.metrics.confidence * 100).rounded()))% — signal strength, class separation, and stability; not movie-frame recognition.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -443,6 +443,18 @@ struct ContentView: View {
         case .dialogue: return "quote.bubble.fill"
         case .suspense: return "moon.stars.fill"
         case .action: return "bolt.fill"
+        }
+    }
+
+    private func eventSymbol(_ event: CinemaEvent) -> String {
+        switch event {
+        case .quiet: return "moon.zzz.fill"
+        case .settle: return "water.waves"
+        case .dialogueLine: return "quote.bubble.fill"
+        case .crescendo: return "chart.line.uptrend.xyaxis"
+        case .pulse: return "waveform.path.ecg"
+        case .stinger: return "bolt.fill"
+        case .release: return "arrow.down.right"
         }
     }
 

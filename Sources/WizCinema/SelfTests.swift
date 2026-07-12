@@ -7,6 +7,7 @@ enum SelfTests {
         try testSetPilotClampsBrightnessAndColor()
         try testPilotRestorePreservesSceneBeforeColor()
         try testAnalyzerSeparatesLowAndHighTones()
+        try testClassifierReportsSignalQualityAndStingers()
         try testMapperUsesMinimumBrightnessInSilenceAndSmooths()
         try testAudioMoodDrivesCinematicMotion()
     }
@@ -55,6 +56,17 @@ enum SelfTests {
         try check(high.treble > high.bass && !high.isSilent, "5 kHz must bias treble.")
     }
 
+    private static func testClassifierReportsSignalQualityAndStingers() throws {
+        let analyzer = AudioAnalyzer()
+        let quiet = analyzer.analyze(samples: [Float](repeating: 0, count: 2_048), sampleRate: 48_000)
+        try check(quiet.isSilent && quiet.confidence == 0 && quiet.event == .quiet, "Silence must not claim a confident scene classification.")
+
+        _ = analyzer.analyze(samples: sineWave(frequency: 140, frames: 4_096, amplitude: 0.06), sampleRate: 48_000)
+        let impact = analyzer.analyze(samples: impactBurst(frames: 4_096), sampleRate: 48_000)
+        try check(impact.transient > 0.45 && impact.event == .stinger, "A broadband soundtrack hit must be recognized as a stinger.")
+        try check(impact.confidence > 0 && impact.confidence <= 0.96, "Signal confidence must stay bounded and be nonzero for usable audio.")
+    }
+
     private static func testMapperUsesMinimumBrightnessInSilenceAndSmooths() throws {
         let settings = LightingSettings(palette: .ocean, minimumBrightness: 8, maximumBrightness: 65, sensitivity: 1, responsiveness: 0.5)
         let previous = LightTarget(color: .black, brightness: 8)
@@ -70,10 +82,23 @@ enum SelfTests {
         let action = AudioMetrics(level: 0.9, bass: 0.66, mid: 0.2, treble: 0.14, dynamics: 0.9, mood: .action, beat: true, isSilent: false)
         let actionTarget = LightingMapper.target(metrics: action, settings: settings, previous: LightTarget(color: .black, brightness: 8))
         try check(actionTarget.brightness > 8 && actionTarget.brightness < 30, "Action must be energetic but smooth.")
+        var stinger = action
+        stinger.event = .stinger
+        stinger.transient = 1
+        let stingerTarget = LightingMapper.target(metrics: stinger, settings: settings, previous: LightTarget(color: .black, brightness: 8))
+        try check(stingerTarget.brightness > actionTarget.brightness, "A stinger must create a controlled, visible accent.")
     }
 
-    private static func sineWave(frequency: Double, frames: Int) -> [Float] {
-        (0 ..< frames).map { Float(sin(2 * .pi * frequency * Double($0) / 48_000) * 0.4) }
+    private static func sineWave(frequency: Double, frames: Int, amplitude: Double = 0.4) -> [Float] {
+        (0 ..< frames).map { Float(sin(2 * .pi * frequency * Double($0) / 48_000) * amplitude) }
+    }
+
+    private static func impactBurst(frames: Int) -> [Float] {
+        (0 ..< frames).map { index in
+            let time = Double(index) / 48_000
+            let envelope = exp(-time * 14)
+            return Float(envelope * (0.56 * sin(2 * .pi * 72 * time) + 0.32 * sin(2 * .pi * 1_100 * time) + 0.20 * sin(2 * .pi * 5_300 * time)))
+        }
     }
 
     private static func check(_ condition: Bool, _ message: String) throws {

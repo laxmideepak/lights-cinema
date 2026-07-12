@@ -6,6 +6,13 @@ then makes compatible lights follow the film with gentle cinematic
 transitions. It supports direct local WiZ and LIFX control. It does not need
 BlackHole, Loopback, or a cloud API to control either of those brands.
 
+The audio-only conductor uses a compact spectral filter bank, onset/flux
+tracking, adaptive loudness, and a temporal scene window. It has deliberate
+events for **stingers**, **pulses**, **crescendos**, **dialogue lines**, and
+**releases**. The scene-confidence value is an honest quality measurement of
+signal strength, category separation, and temporal stability; it is not a
+claim that the app can see the film or identify its exact plot beat.
+
 ## Requirements
 
 - macOS 15 or later (the Core Audio tap itself was introduced in macOS 14.2)
