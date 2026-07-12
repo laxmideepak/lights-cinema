@@ -212,7 +212,12 @@ final class HomeAssistantClient: @unchecked Sendable {
     private static func category(for domain: String, attributes: [String: Any]) -> CinemaDeviceCategory? {
         switch domain {
         case "light": return .light
-        case "media_player": return .speaker
+        case "media_player":
+            switch (attributes["device_class"] as? String)?.lowercased() {
+            case "tv": return .television
+            case "receiver": return .receiver
+            default: return .speaker
+            }
         case "cover":
             // HA's cover domain can also represent a garage, door, or gate.
             // Without an explicit safe device class we keep the device out of
@@ -235,7 +240,11 @@ final class HomeAssistantClient: @unchecked Sendable {
             if modes.contains(where: { $0.contains("rgb") || $0 == "hs" || $0 == "xy" }) { result.insert(.color) }
             if modes.contains(where: { $0.contains("temp") }) { result.insert(.colorTemperature) }
             return result
-        case "media_player": return [.power, .volume, .mute, .playback]
+        case "media_player":
+            var result: Set<CinemaDeviceCapability> = [.power, .playback]
+            if attributes["volume_level"] is Double || attributes["volume_level"] is Int { result.insert(.volume) }
+            if attributes["is_volume_muted"] is Bool { result.insert(.mute) }
+            return result
         case "cover": return [.position]
         case "fan": return [.power, .speed]
         case "switch": return [.power]

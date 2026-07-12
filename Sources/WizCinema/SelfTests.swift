@@ -74,19 +74,24 @@ enum SelfTests {
     private static func testHomeAssistantSafeEntityTranslationAndPayload() throws {
         let states: [[String: Any]] = [
             ["entity_id": "light.cinema", "state": "on", "attributes": ["friendly_name": "Cinema Lamp", "brightness": 128, "supported_color_modes": ["rgb"]]],
-            ["entity_id": "media_player.receiver", "state": "playing", "attributes": ["volume_level": 0.35]],
+            ["entity_id": "media_player.receiver", "state": "playing", "attributes": ["device_class": "receiver", "volume_level": 0.35]],
+            ["entity_id": "media_player.tv", "state": "idle", "attributes": ["device_class": "tv"]],
             ["entity_id": "cover.living_room_shade", "state": "open", "attributes": ["device_class": "shade", "current_position": 100]],
             ["entity_id": "cover.garage", "state": "closed", "attributes": ["device_class": "garage"]],
             ["entity_id": "cover.unknown", "state": "closed", "attributes": [:]],
             ["entity_id": "lock.front_door", "state": "locked", "attributes": ["friendly_name": "Front Door"]]
         ]
         let devices = HomeAssistantClient.devices(from: states)
-        try check(devices.count == 3, "Unsafe Home Assistant domains and unsafe cover classes must be excluded.")
+        try check(devices.count == 4, "Unsafe Home Assistant domains and unsafe cover classes must be excluded.")
         let light = try require(devices.first(where: { $0.providerIdentifier == "light.cinema" }), "Safe light must be discovered.")
         try check(light.supportsLiveAmbientSync, "RGB HA light must support live ambient sync.")
         try check(devices.contains(where: { $0.providerIdentifier == "cover.living_room_shade" }), "Window shades must be discoverable.")
         try check(!devices.contains(where: { $0.providerIdentifier == "cover.garage" }), "Garage covers must never be exposed as cinema shades.")
         try check(!devices.contains(where: { $0.providerIdentifier == "cover.unknown" }), "Covers without a safe class must never be guessed safe.")
+        let receiver = try require(devices.first(where: { $0.providerIdentifier == "media_player.receiver" }), "A receiver must be discovered.")
+        try check(receiver.category == .receiver && CinemaRole.available(for: receiver).contains(.mediaVolume), "Volume-capable receivers must expose the media-volume role.")
+        let television = try require(devices.first(where: { $0.providerIdentifier == "media_player.tv" }), "A television must be discovered.")
+        try check(television.category == .television && CinemaRole.available(for: television) == [.observeOnly], "TVs without reported volume control must remain observe-only.")
         let payload = try require(HomeAssistantClient.servicePayload(domain: "light", service: "turn_on", data: ["entity_id": "light.cinema", "brightness_pct": 45]), "Safe light payload must serialize.")
         try check((try JSONSerialization.jsonObject(with: payload) as? [String: Any])?["brightness_pct"] as? Int == 45, "Service payload must retain brightness.")
         try check(HomeAssistantClient.servicePayload(domain: "cover", service: "set_cover_position", data: ["entity_id": "cover.living_room_shade", "position": 0]) != nil, "A valid explicit shade position must serialize.")

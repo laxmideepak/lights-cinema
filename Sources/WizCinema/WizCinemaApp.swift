@@ -465,7 +465,7 @@ struct ContentView: View {
                                     }
                                     Spacer()
                                     Picker("Role", selection: $device.role) {
-                                        ForEach(CinemaRole.available(for: device.category)) { role in Text(role.rawValue).tag(role) }
+                                        ForEach(CinemaRole.available(for: device)) { role in Text(role.rawValue).tag(role) }
                                     }
                                     .labelsHidden()
                                     .frame(width: 135)

@@ -53,6 +53,21 @@ enum CinemaRole: String, CaseIterable, Codable, Identifiable, Sendable {
             return [.observeOnly]
         }
     }
+
+    static func available(for device: CinemaDevice) -> [CinemaRole] {
+        switch device.category {
+        case .light:
+            return [.ambientLight, .observeOnly]
+        case .speaker, .television, .receiver:
+            return device.capabilities.contains(.volume) ? [.mediaVolume, .observeOnly] : [.observeOnly]
+        case .cover:
+            return device.capabilities.contains(.position) ? [.shades, .observeOnly] : [.observeOnly]
+        case .fan:
+            return device.capabilities.contains(.speed) ? [.fan, .observeOnly] : [.observeOnly]
+        case .switchDevice, .restricted:
+            return [.observeOnly]
+        }
+    }
 }
 
 struct CinemaSessionSettings: Equatable, Sendable {
