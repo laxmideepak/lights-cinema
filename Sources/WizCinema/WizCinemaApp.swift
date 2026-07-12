@@ -8,6 +8,7 @@ final class AppModel: ObservableObject {
     @Published var bulbs = [WiZBulb]()
     @Published var lifxLights = [LIFXLight]()
     @Published var hueBridges = [HueBridge]()
+    @Published var hueLights = [HueLight]()
     @Published var palette: LightPalette = .cinema
     @Published var minimumBrightness = 8.0
     @Published var maximumBrightness = 65.0
@@ -21,10 +22,12 @@ final class AppModel: ObservableObject {
     @Published var status = "Ready to find lights on your Wi‑Fi."
     @Published var errorMessage: String?
     @Published var manualIP = ""
+    @Published var pairingHueBridgeID: String?
 
     private let service = WiZService()
     private let lifxService = LIFXService()
     private let hueDiscoveryService = HueDiscoveryService()
+    private let hueService = HueService()
     private let analyzer = AudioAnalyzer()
     private var audioTap: SystemAudioTap?
     private var tickTimer: Timer?
@@ -32,8 +35,10 @@ final class AppModel: ObservableObject {
     private var lastSentTarget: LightTarget?
     private var savedWiZStates = [String: PilotState]()
     private var savedLIFXStates = [String: LIFXState]()
+    private var savedHueStates = [String: HueLightState]()
+    private var lastHueSendTime = Date.distantPast
     var selectedCount: Int {
-        bulbs.filter(\.selected).count + lifxLights.filter(\.selected).count
+        bulbs.filter(\.selected).count + lifxLights.filter(\.selected).count + hueLights.filter(\.selected).count
     }
 
     var settings: LightingSettings {
@@ -54,6 +59,7 @@ final class AppModel: ObservableObject {
         status = "Discovering local light protocols…"
         let selectedIDs = Set(bulbs.filter(\.selected).map(\.id))
         let selectedLIFXIDs = Set(lifxLights.filter(\.selected).map(\.id))
+        let selectedHueIDs = Set(hueLights.filter(\.selected).map(\.id))
 
         Task {
             async let wizDiscovery = service.discover()
@@ -61,7 +67,12 @@ final class AppModel: ObservableObject {
             async let hueDiscovery = hueDiscoveryService.discover()
             let found = await wizDiscovery
             let lifxFound = await lifxDiscovery
-            hueBridges = await hueDiscovery
+            let discoveredBridges = await hueDiscovery
+            hueBridges = discoveredBridges.map { bridge in
+                var bridge = bridge
+                bridge.isPaired = hueService.credentials.username(for: bridge.id) != nil
+                return bridge
+            }
             var inspected = [WiZBulb]()
             for bulb in found {
                 var profile = await service.inspect(ipAddress: bulb.ipAddress, knownMAC: bulb.macAddress) ?? bulb
@@ -76,14 +87,45 @@ final class AppModel: ObservableObject {
                 inspectedLIFX.append(profile)
             }
             lifxLights = inspectedLIFX
+            var loadedHueLights = [HueLight]()
+            for bridge in hueBridges where bridge.isPaired {
+                guard let username = hueService.credentials.username(for: bridge.id), let lights = try? await hueService.lights(bridge: bridge, username: username) else { continue }
+                loadedHueLights.append(contentsOf: lights.map { light in
+                    var light = light
+                    light.selected = selectedHueIDs.isEmpty || selectedHueIDs.contains(light.id)
+                    return light
+                })
+            }
+            hueLights = loadedHueLights
             isDiscovering = false
-            let controllable = bulbs.count + lifxLights.count
+            let controllable = bulbs.count + lifxLights.count + hueLights.count
             if controllable == 0, hueBridges.isEmpty {
                 status = "No supported local lights found. Check Wi‑Fi and each brand's local-control setting."
             } else if controllable == 0 {
                 status = "Found \(hueBridges.count) Hue bridge\(hueBridges.count == 1 ? "" : "s"). Pairing is required before control."
             } else {
                 status = "Found \(controllable) controllable local light\(controllable == 1 ? "" : "s")\(hueBridges.isEmpty ? "" : " and \(hueBridges.count) Hue bridge\(hueBridges.count == 1 ? "" : "s")")."
+            }
+        }
+    }
+
+    func pairHue(_ bridge: HueBridge) {
+        guard pairingHueBridgeID == nil, !isRunning else { return }
+        pairingHueBridgeID = bridge.id
+        errorMessage = nil
+        status = "Press the physical Hue Bridge button, then pairing…"
+        Task {
+            defer { pairingHueBridgeID = nil }
+            do {
+                let username = try await hueService.pair(bridge: bridge)
+                let lights = try await hueService.lights(bridge: bridge, username: username)
+                if let index = hueBridges.firstIndex(where: { $0.id == bridge.id }) { hueBridges[index].isPaired = true }
+                hueLights.removeAll { $0.bridgeID == bridge.id }
+                hueLights.append(contentsOf: lights)
+                status = "Paired Hue Bridge and added \(lights.count) Hue light\(lights.count == 1 ? "" : "s")."
+            } catch {
+                errorMessage = "Hue pairing needs a press of the physical bridge button, then Pair Hue. \(error.localizedDescription)"
+                status = "Hue pairing did not complete."
             }
         }
     }
@@ -123,6 +165,7 @@ final class AppModel: ObservableObject {
         Task {
             savedWiZStates.removeAll()
             savedLIFXStates.removeAll()
+            savedHueStates.removeAll()
             for index in bulbs.indices where bulbs[index].selected {
                 if let refreshed = await service.inspect(ipAddress: bulbs[index].ipAddress, knownMAC: bulbs[index].macAddress) {
                     bulbs[index] = refreshed
@@ -133,6 +176,10 @@ final class AppModel: ObservableObject {
                 let refreshed = await lifxService.inspect(lifxLights[index])
                 lifxLights[index] = refreshed
                 if let state = refreshed.state { savedLIFXStates[refreshed.id] = state }
+            }
+            for index in hueLights.indices where hueLights[index].selected {
+                if let refreshed = await hueService.refresh(hueLights[index]) { hueLights[index] = refreshed }
+                savedHueStates[hueLights[index].id] = hueLights[index].state
             }
 
             analyzer.reset()
@@ -175,6 +222,7 @@ final class AppModel: ObservableObject {
         isStarting = false
         previousTarget = nil
         lastSentTarget = nil
+        lastHueSendTime = .distantPast
         metrics = AudioMetrics()
 
         if restore {
@@ -188,13 +236,19 @@ final class AppModel: ObservableObject {
                 return (light, state)
             }
             for (light, state) in lifxRestorePairs { lifxService.restore(state, to: light) }
-            let restores = restorePairs.count + lifxRestorePairs.count
+            let hueRestorePairs = hueLights.compactMap { light -> (HueLight, HueLightState)? in
+                guard let state = savedHueStates[light.id] else { return nil }
+                return (light, state)
+            }
+            for (light, state) in hueRestorePairs { Task { await hueService.restore(state, to: light) } }
+            let restores = restorePairs.count + lifxRestorePairs.count + hueRestorePairs.count
             status = restores == 0 ? "Stopped." : "Stopped and restoring the previous light settings."
         } else {
             status = "Stopped."
         }
         savedWiZStates.removeAll()
         savedLIFXStates.removeAll()
+        savedHueStates.removeAll()
     }
 
     private func sendLatestLightingTarget() {
@@ -205,6 +259,10 @@ final class AppModel: ObservableObject {
         lastSentTarget = target
         for bulb in bulbs where bulb.selected { service.send(target: target, to: bulb) }
         for light in lifxLights where light.selected { lifxService.send(target: target, to: light) }
+        if Date().timeIntervalSince(lastHueSendTime) >= 0.2 {
+            lastHueSendTime = Date()
+            for light in hueLights where light.selected { Task { await hueService.send(target: target, to: light) } }
+        }
     }
 }
 
@@ -313,6 +371,16 @@ struct ContentView: View {
                             .toggleStyle(.checkbox)
                             .disabled(model.isRunning)
                         }
+                        ForEach($model.hueLights) { $light in
+                            Toggle(isOn: $light.selected) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(light.displayName).fontWeight(.medium)
+                                    Text(light.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                            .disabled(model.isRunning)
+                        }
                         ForEach(model.hueBridges) { bridge in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "link.badge.plus")
@@ -322,9 +390,16 @@ struct ContentView: View {
                                     Text(bridge.detail).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text("Detected")
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.orange)
+                                if bridge.isPaired {
+                                    Text("Connected")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Button(model.pairingHueBridgeID == bridge.id ? "Pairing…" : "Pair Hue") { model.pairHue(bridge) }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(model.pairingHueBridgeID != nil || model.isRunning)
+                                }
                             }
                             .padding(.vertical, 2)
                         }

@@ -27,9 +27,9 @@ APIs or operating arbitrary network devices:
 
 - **WiZ:** automatic UDP discovery and direct local control.
 - **LIFX:** automatic UDP discovery and direct local control.
-- **Philips Hue:** automatic official bridge discovery. The bridge is shown as
-  detected; its required physical-button pairing/control workflow is not yet
-  enabled in this build.
+- **Philips Hue:** automatic official bridge discovery, then direct local
+  control after you press the physical bridge button and select **Pair Hue**.
+  The bridge-generated credential is stored in this Mac's Keychain.
 - **Nanoleaf, Govee, Kasa/Tapo and other brands:** not presented as compatible
   until a documented local control and pairing path can be implemented and
   tested.
@@ -79,9 +79,10 @@ dist/WizCinema.app/Contents/MacOS/WizCinema --sync-probe
 ## Use
 
 1. Select **Discover**. WiZ and LIFX lights on this Mac's Wi-Fi appear after a
-   few seconds. A Hue bridge is shown separately as detected, pending its
-   physical pairing workflow. If WiZ broadcast discovery is blocked, enter its IP address.
-2. Tick the WiZ or LIFX lights you want to use, then choose a palette and brightness range.
+   few seconds. For Hue, press the bridge button and select **Pair Hue** once;
+   its lights then appear in the same selectable list. If WiZ broadcast
+   discovery is blocked, enter its IP address.
+2. Tick the WiZ, LIFX, or Hue lights you want to use, then choose a palette and brightness range.
 3. Set **Cinema depth**, then press **Start cinema sync** and play a film. The
    app derives local soundtrack moods and events from bass, dialogue-range
    midtones, treble, loudness, dynamics, builds, impacts, and releases. The UI
@@ -117,5 +118,6 @@ is not ideal with headphones.
 All soundtrack analysis happens in memory on this Mac. WizCinema does not see,
 save, record, upload, or transmit your screen or audio. WiZ and LIFX control
 traffic is local UDP sent only to the lights you choose. Hue bridge discovery
-only asks Hue's official discovery endpoint for a local bridge address; it
-never sends soundtrack data.
+asks Hue's official discovery endpoint only for a local bridge address; after
+pairing, Hue control is direct local HTTPS to that bridge. No soundtrack data
+is included in any provider request.

@@ -150,9 +150,33 @@ struct LIFXLight: Identifiable, Equatable, Sendable {
 struct HueBridge: Identifiable, Equatable, Sendable {
     let id: String
     var ipAddress: String
+    var isPaired: Bool = false
 
     var displayName: String { "Philips Hue Bridge" }
-    var detail: String { "\(ipAddress) · Press its link button to pair" }
+    var detail: String { "\(ipAddress) · \(isPaired ? "Paired for local control" : "Press its link button to pair")" }
+}
+
+struct HueLightState: Equatable, Sendable {
+    var on: Bool
+    var brightness: Int
+    var hue: Int?
+    var saturation: Int?
+    var colorTemperature: Int?
+}
+
+struct HueLight: Identifiable, Equatable, Sendable {
+    let id: String
+    var bridgeID: String
+    var bridgeAddress: String
+    var username: String
+    var lightID: String
+    var name: String
+    var supportsColor: Bool
+    var state: HueLightState
+    var selected: Bool
+
+    var displayName: String { name }
+    var detail: String { "Hue Bridge · \(supportsColor ? "Full color" : "White")" }
 }
 
 enum LightPalette: String, CaseIterable, Identifiable, Sendable {
